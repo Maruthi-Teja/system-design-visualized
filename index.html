@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>System Design Visualized — animated walkthroughs for backend interviews</title>
+  <meta name="description" content="Animated, interactive system design walkthroughs for SDE-2 backend interview prep. Step through real architectures one request at a time.">
+  <meta name="theme-color" content="#0a0e14">
+  <!-- Set the theme before first paint to avoid a flash. -->
+  <script>(function(){var t;try{t=localStorage.getItem('sdv-theme')}catch(e){}if(!t)t=window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t})()</script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0e14'/%3E%3Cpath d='M8 10h6v5H8zM18 17h6v5h-6z' fill='none' stroke='%235eead4' stroke-width='2'/%3E%3Cpath d='M14 12.5h4v7' fill='none' stroke='%23fbbf24' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="index.html">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--surface-2)"/><path d="M8 10h6v5H8zM18 17h6v5h-6z" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M14 12.5h4v7" fill="none" stroke="var(--money)" stroke-width="2"/></svg>
+      <span>System Design <small>Visualized</small></span>
+    </a>
+    <nav class="topnav" aria-label="Site">
+      <a href="#designs">Designs</a>
+      <a href="https://github.com/Maruthi-Teja/system-design-visualized">GitHub</a>
+    </nav>
+    <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle dark / light mode">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <section class="wrap hero">
+    <p class="eyebrow">SDE-2 backend interview prep</p>
+    <h1>Watch the request <em>move</em> through the system.</h1>
+    <p class="lede">System design answers are easier to remember when you’ve seen them run. Each walkthrough follows one request step by step — what each component does, what it stores, and the tradeoff you’d be asked to defend.</p>
+    <ul class="chips">
+      <li class="chip">step-through diagrams</li>
+      <li class="chip">tradeoffs at every hop</li>
+      <li class="chip">model answers to follow-ups</li>
+      <li class="chip"><b>←</b> <b>→</b> keyboard</li>
+      <li class="chip">works offline</li>
+    </ul>
+  </section>
+
+  <section class="wrap" id="designs">
+    <h2 class="section-label">Available now</h2>
+    <div class="cards">
+      <a class="card card-live" href="designs/rtb.html">
+        <div class="card-body">
+          <span class="card-tag">HLD · 18 steps</span>
+          <h3>Ad-Serving / Real-Time Bidding System</h3>
+          <p>An auction across a dozen companies in under 100 ms. Follow a bid request through SSP, exchange and DSP internals, then the Kafka → Flink → Druid pipeline that counts the money.</p>
+          <ul class="chips" style="margin-top:4px">
+            <li class="chip">1M QPS</li><li class="chip">p99 &lt; 100 ms</li><li class="chip">OpenRTB</li><li class="chip">budget pacing</li>
+          </ul>
+          <span class="card-cta">Start the walkthrough <span aria-hidden="true">→</span></span>
+        </div>
+        <!-- Decorative mini-diagram: three packets looping through a tiny version of the flow. -->
+        <div class="card-art" aria-hidden="true">
+          <svg viewBox="0 0 420 200">
+            <path id="art-p1" class="a-line" d="M70,50 H130 M190,50 H250 M310,50 H350"/>
+            <path class="a-line" d="M220,68 V150 H190 M130,150 H70"/>
+            <path id="art-hot" d="M40,50 H380" fill="none"/>
+            <path id="art-win" d="M380,50 H40" fill="none"/>
+            <path id="art-async" d="M220,68 V150 H40" fill="none"/>
+            <rect class="a-box" x="10" y="32" width="60" height="36" rx="8"/><text class="a-text" x="40" y="54">Page</text>
+            <rect class="a-box" x="130" y="32" width="60" height="36" rx="8"/><text class="a-text" x="160" y="54">SSP</text>
+            <rect class="a-box a-hot" x="250" y="32" width="60" height="36" rx="8"/><text class="a-text" x="280" y="54">Exch</text>
+            <rect class="a-box" x="350" y="32" width="60" height="36" rx="8"/><text class="a-text" x="380" y="54">DSP</text>
+            <rect class="a-box" x="130" y="132" width="60" height="36" rx="8"/><text class="a-text" x="160" y="154">Kafka</text>
+            <rect class="a-box" x="10" y="132" width="60" height="36" rx="8"/><text class="a-text" x="40" y="154">OLAP</text>
+            <circle class="a-dot" r="5"><animateMotion dur="2.6s" repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;0.7;1" calcMode="linear"><mpath href="#art-hot"/></animateMotion></circle>
+            <circle class="a-dot-2" r="5"><animateMotion dur="2.6s" repeatCount="indefinite" keyPoints="0;0;1" keyTimes="0;0.45;1" calcMode="linear"><mpath href="#art-win"/></animateMotion></circle>
+            <circle class="a-dot-3" r="4"><animateMotion dur="3.4s" repeatCount="indefinite"><mpath href="#art-async"/></animateMotion></circle>
+          </svg>
+        </div>
+      </a>
+    </div>
+
+    <h2 class="section-label">Coming soon</h2>
+    <div class="cards">
+      <div class="card card-soon">
+        <span class="card-tag">LLD</span>
+        <h3>Rate Limiter</h3>
+        <p>Token bucket, sliding window and friends — classes, concurrency, and where the counters live.</p>
+      </div>
+      <div class="card card-soon">
+        <span class="card-tag">HLD</span>
+        <h3>URL Shortener</h3>
+        <p>Key generation, redirects at read-heavy scale, caching and analytics.</p>
+      </div>
+      <div class="card card-soon">
+        <span class="card-tag">HLD</span>
+        <h3>Notification System</h3>
+        <p>Fan-out across push, SMS and email with retries, priorities and user preferences.</p>
+      </div>
+      <div class="card card-soon">
+        <span class="card-tag">LLD</span>
+        <h3>Parking Lot</h3>
+        <p>Entities, slot allocation strategies, pricing and the state machine behind a ticket.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <span>System Design Visualized — plain HTML, CSS and JavaScript. No trackers, no build step.</span>
+    <a href="https://github.com/Maruthi-Teja/system-design-visualized">Source on GitHub</a>
+  </div>
+</footer>
+
+<script src="assets/engine.js"></script>
+</body>
+</html>

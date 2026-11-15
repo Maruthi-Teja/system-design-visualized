@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design an Ad-Serving / Real-Time Bidding System · System Design Visualized</title>
+  <meta name="description" content="Animated, step-by-step walkthrough of a real-time bidding (RTB) ad-serving system: SSP, ad exchange, DSP internals, first-price auction, and the Kafka → Flink → Druid event pipeline.">
+  <meta name="theme-color" content="#0a0e14">
+  <!-- Set the theme before first paint to avoid a flash. -->
+  <script>(function(){var t;try{t=localStorage.getItem('sdv-theme')}catch(e){}if(!t)t=window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t})()</script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0e14'/%3E%3Cpath d='M8 10h6v5H8zM18 17h6v5h-6z' fill='none' stroke='%235eead4' stroke-width='2'/%3E%3Cpath d='M14 12.5h4v7' fill='none' stroke='%23fbbf24' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="../index.html">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--surface-2)"/><path d="M8 10h6v5H8zM18 17h6v5h-6z" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M14 12.5h4v7" fill="none" stroke="var(--money)" stroke-width="2"/></svg>
+      <span>System Design <small>Visualized</small></span>
+    </a>
+    <nav class="topnav" aria-label="On this page">
+      <a href="#requirements">Requirements</a>
+      <a href="#estimation">Estimation</a>
+      <a href="#walkthrough-section">Walkthrough</a>
+      <a href="#deep-dive">Deep dive</a>
+      <a href="#interview">Interviewer asks</a>
+    </nav>
+    <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle dark / light mode">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <div class="wrap page-hero">
+    <p class="crumb"><a href="../index.html">All designs</a> / HLD</p>
+    <h1>Design an Ad-Serving / Real-Time Bidding System</h1>
+    <p class="lede">A page loads, an auction runs across a dozen companies, and an ad appears — all in under 100 ms. Step through the request path, then follow the events that pay for it.</p>
+    <ul class="chips">
+      <li class="chip"><b>p99</b> &lt; 100 ms</li>
+      <li class="chip"><b>~1M</b> QPS bid requests</li>
+      <li class="chip">OpenRTB <b>2.x</b></li>
+      <li class="chip">first-price auction</li>
+      <li class="chip">Kafka → Flink → Druid</li>
+    </ul>
+  </div>
+
+  <!-- ============================ 1. Requirements ============================ -->
+  <section class="wrap section" id="requirements">
+    <div class="section-head"><span class="num">01</span><h2>Requirements</h2></div>
+    <p class="section-intro">Scope it first. We cover the full request path, and go deep on the <b>DSP bidder</b> — the component that must answer a firehose of bid requests inside a hard deadline — plus the event pipeline behind it.</p>
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">Functional</span></h3>
+        <ul class="checklist">
+          <li><b>Run an auction per ad slot</b> <span>— SSP → exchange → DSPs → winner’s creative back to the page.</span></li>
+          <li><b>Target</b> <span>— match campaigns on geo, device, audience segment, time, frequency cap.</span></li>
+          <li><b>Respect budgets</b> <span>— never (meaningfully) overspend; pace spend across the day.</span></li>
+          <li><b>Price each bid</b> <span>— predicted value → bid, per impression.</span></li>
+          <li><b>Track</b> <span>— wins, impressions, clicks as billable events.</span></li>
+          <li><b>Report</b> <span>— near-real-time dashboards; exact numbers for invoices.</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Non-functional</span></h3>
+        <ul class="checklist">
+          <li><b>Latency</b> <span>— p99 &lt; 100 ms end-to-end; the bidder itself gets ~20–30 ms.</span></li>
+          <li><b>Throughput</b> <span>— ~1M QPS bid requests at peak, spiky by time of day.</span></li>
+          <li><b>High availability</b> <span>— 99.9%+; a down bidder earns nothing, a slow one is as good as down.</span></li>
+          <li><b>Consistency</b> <span>— eventual is fine for reporting; budgets need <i>bounded</i> error; billing must be exact after reconciliation.</span></li>
+          <li><b>Durability</b> <span>— never lose a billable event.</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Out of scope</span></h3>
+        <ul class="checklist is-out">
+          <li>Campaign-management UI and creative review workflow</li>
+          <li>Training the bid model (we only serve it)</li>
+          <li>Building audience segments (we only read them)</li>
+          <li>Cookie-sync / identity resolution details</li>
+          <li>Payments and invoicing systems</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 2. Estimation ============================= -->
+  <section class="wrap section" id="estimation">
+    <div class="section-head"><span class="num">02</span><h2>Back-of-envelope estimation</h2></div>
+    <p class="section-intro">Round numbers, stated assumptions. The goal is to find which dimension hurts — here it’s request rate and tail latency, not storage.</p>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-label">Bid requests</div><div class="stat-value">52B<small>/ day</small></div><div class="stat-note">1M QPS peak · ~600K average</div></div>
+      <div class="stat"><div class="stat-label">Inbound bandwidth</div><div class="stat-value">16<small>Gbps peak</small></div><div class="stat-note">~4 Gbps on the wire with gzip</div></div>
+      <div class="stat"><div class="stat-label">Raw event storage</div><div class="stat-value">7.4<small>TB / day</small></div><div class="stat-note">~1.5 TB/day once columnar + compressed</div></div>
+      <div class="stat"><div class="stat-label">Bidder fleet</div><div class="stat-value">~130<small>nodes</small></div><div class="stat-note">32-core, 50% target utilisation, per-region N+1 on top</div></div>
+    </div>
+
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">QPS</span> Traffic funnel</h3>
+        <ul class="math">
+          <li><span>Bid requests / day</span><span class="res">≈ 52B</span><span class="calc">600K avg × 86,400 s</span></li>
+          <li><span>Bids placed (≈10% bid rate)</span><span class="res">≈ 5.2B / day</span><span class="calc">100K bids/s at peak; the other 90% exit early → HTTP 204</span></li>
+          <li><span>Wins (≈15% win rate)</span><span class="res">≈ 780M / day</span><span class="calc">5.2B × 0.15 → ~9K/s average</span></li>
+          <li><span>Impressions (≈90% render)</span><span class="res">≈ 700M / day</span><span class="calc">780M × 0.9</span></li>
+          <li><span>Clicks (≈0.5% CTR)</span><span class="res">≈ 3.5M / day</span><span class="calc">700M × 0.005</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Bandwidth</span> &amp; compute</h3>
+        <ul class="math">
+          <li><span>Requests in</span><span class="res">2 GB/s ≈ 16 Gbps</span><span class="calc">1M QPS × ~2 KB JSON bid request</span></li>
+          <li><span>Responses out</span><span class="res">≈ 0.8 Gbps</span><span class="calc">100K bids/s × ~1 KB (204s are ~free)</span></li>
+          <li><span>CPU</span><span class="res">≈ 4,000 cores</span><span class="calc">1M QPS × ~2 ms avg CPU = 2,000 busy cores ÷ 50% utilisation</span></li>
+          <li><span>Segment-store reads</span><span class="res">≤ 1M / s</span><span class="calc">one KV get per request that survives early filters</span></li>
+          <li><span>Segment-store size</span><span class="res">≈ 600 GB</span><span class="calc">1B profiles × 200 B × 3 replicas</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Storage</span> Events per day</h3>
+        <ul class="math">
+          <li><span>Bid log</span><span class="res">≈ 5.2 TB</span><span class="calc">5.2B bids × ~1 KB (features + price, for model training)</span></li>
+          <li><span>Wins + impressions + clicks</span><span class="res">≈ 1.2 TB</span><span class="calc">~1.5B events × ~0.8 KB</span></li>
+          <li><span>No-bid sample (1%)</span><span class="res">≈ 1 TB</span><span class="calc">520M × 2 KB — full logging would be 100 TB/day</span></li>
+          <li><span>Kafka footprint</span><span class="res">≈ 67 TB</span><span class="calc">7.4 TB × RF 3 × 3 days retention</span></li>
+          <li><span>OLAP after rollup</span><span class="res">tens of GB</span><span class="calc">minute × line item × publisher × geo rows, not raw events</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 3. Walkthrough ============================= -->
+  <section class="wrap section" id="walkthrough-section">
+    <div class="section-head"><span class="num">03</span><h2>Architecture walkthrough</h2></div>
+    <p class="section-intro">One ad request, 18 steps. The first twelve race the 100 ms budget; the rest happen after the user already has the ad. Click any component to jump to it.</p>
+    <div id="walkthrough"></div>
+    <noscript><p class="block">The interactive walkthrough needs JavaScript. The sections above and below work without it.</p></noscript>
+  </section>
+
+  <!-- ============================== 4. Deep dive ============================== -->
+  <section class="wrap section" id="deep-dive">
+    <div class="section-head"><span class="num">04</span><h2>Deep dive</h2></div>
+
+    <h3 class="subhead">Data model</h3>
+    <p class="section-intro">Campaign config is small, relational and read-mostly — keep it in a SQL database and push snapshots to every bidder. Events are huge, append-only and immutable — they live in Kafka, the data lake and the OLAP store.</p>
+    <div class="entities">
+      <div class="entity">
+        <header>campaign <span>SQL · source of truth</span></header>
+        <ul>
+          <li class="pk"><b>campaign_id</b><i>PK</i></li>
+          <li class="fk"><b>advertiser_id</b><i>FK</i></li>
+          <li><b>name, objective</b><i>text</i></li>
+          <li><b>start_at, end_at</b><i>timestamp</i></li>
+          <li><b>status</b><i>active | paused</i></li>
+        </ul>
+        <footer>The contract with the advertiser. Thousands of rows, not millions.</footer>
+      </div>
+      <div class="entity">
+        <header>line_item <span>SQL → bidder memory</span></header>
+        <ul>
+          <li class="pk"><b>line_item_id</b><i>PK</i></li>
+          <li class="fk"><b>campaign_id</b><i>FK</i></li>
+          <li><b>targeting</b><i>json: geo, device, segments, daypart</i></li>
+          <li><b>bid_strategy, max_bid</b><i>enum, micros</i></li>
+          <li><b>freq_cap</b><i>n per window</i></li>
+          <li><b>version</b><i>int (snapshot ordering)</i></li>
+        </ul>
+        <footer>The unit of targeting and pacing. Compiled into the inverted index.</footer>
+      </div>
+      <div class="entity">
+        <header>creative <span>SQL + CDN</span></header>
+        <ul>
+          <li class="pk"><b>creative_id</b><i>PK</i></li>
+          <li class="fk"><b>line_item_id</b><i>FK (many-to-many in practice)</i></li>
+          <li><b>format, w, h</b><i>banner | video | native</i></li>
+          <li><b>asset_url</b><i>CDN path</i></li>
+          <li><b>adomain, categories</b><i>for publisher block lists</i></li>
+          <li><b>review_status</b><i>approved | rejected</i></li>
+        </ul>
+        <footer>Assets are immutable on the CDN; the bidder holds only metadata.</footer>
+      </div>
+      <div class="entity">
+        <header>budget <span>pacing service</span></header>
+        <ul>
+          <li class="pk"><b>line_item_id</b><i>PK</i></li>
+          <li><b>daily_budget, total_budget</b><i>micros</i></li>
+          <li><b>spend_confirmed</b><i>from impression events</i></li>
+          <li><b>spend_pending</b><i>won, not yet rendered</i></li>
+          <li><b>pacing_rate</b><i>tokens / sec</i></li>
+          <li><b>updated_at</b><i>timestamp</i></li>
+        </ul>
+        <footer>Money as integer micros — never floats. Split from line_item because it changes every few seconds.</footer>
+      </div>
+      <div class="entity">
+        <header>event <span>Kafka → lake → OLAP</span></header>
+        <ul>
+          <li class="pk"><b>event_id</b><i>UUID · dedup key</i></li>
+          <li><b>type</b><i>bid | win | impression | click</i></li>
+          <li class="fk"><b>bid_id</b><i>joins the funnel</i></li>
+          <li class="fk"><b>line_item_id, creative_id</b><i>FK</i></li>
+          <li><b>price</b><i>micros</i></li>
+          <li><b>event_ts, ingest_ts</b><i>event time vs arrival</i></li>
+          <li><b>publisher, geo, device</b><i>report dimensions</i></li>
+        </ul>
+        <footer>Append-only and immutable. Corrections are new events, never updates.</footer>
+      </div>
+      <div class="entity">
+        <header>user_profile <span>KV store</span></header>
+        <ul>
+          <li class="pk"><b>user_id</b><i>key</i></li>
+          <li><b>segments[]</b><i>audience IDs</i></li>
+          <li><b>freq_counts{}</b><i>line_item → count, window</i></li>
+          <li><b>last_seen</b><i>timestamp</i></li>
+          <li><b>ttl</b><i>30–90 days</i></li>
+        </ul>
+        <footer>One read per bid request. Sized to fit a single small value (&lt; 1 KB).</footer>
+      </div>
+    </div>
+
+    <h3 class="subhead">API sketch — OpenRTB 2.x</h3>
+    <p class="section-intro">The exchange POSTs a bid request to each DSP; the DSP replies <code>200</code> with a bid or <code>204 No Content</code>. Trimmed examples — real requests carry many more optional fields.</p>
+    <div class="grid-2">
+      <div class="code">
+        <div class="code-head"><span class="verb">POST</span><b>/openrtb2/bid</b><span>exchange → DSP</span></div>
+<pre><code class="json">{
+  "id": "req-7f3a9c",
+  "at": 1,                       // 1 = first-price auction
+  "tmax": 80,                    // ms the DSP has to answer
+  "cur": ["USD"],
+  "imp": [{
+    "id": "1",
+    "banner": { "w": 300, "h": 250, "pos": 1 },
+    "bidfloor": 0.50,            // CPM floor
+    "bidfloorcur": "USD",
+    "secure": 1
+  }],
+  "site": {
+    "domain": "news.example.com",
+    "page": "https://news.example.com/tech/article",
+    "cat": ["IAB19"],
+    "publisher": { "id": "pub-1042" }
+  },
+  "device": {
+    "ua": "Mozilla/5.0 ...",
+    "ip": "203.0.113.24",
+    "devicetype": 4,
+    "os": "Android",
+    "geo": { "country": "IND", "region": "KA", "city": "Bengaluru" }
+  },
+  "user": { "id": "ex-user-55e1", "buyeruid": "dsp-user-9b27" },
+  "bcat": ["IAB25"],             // blocked categories
+  "badv": ["blocked-brand.example"],
+  "regs": { "coppa": 0 }
+}</code></pre>
+        <div class="code-note"><code>tmax</code> is the whole contract: answer within it or be ignored. <code>buyeruid</code> is the DSP’s own ID for this user, from a prior cookie sync.</div>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="verb">200</span><b>BidResponse</b><span>DSP → exchange</span></div>
+<pre><code class="json">{
+  "id": "req-7f3a9c",            // echoes the request id
+  "cur": "USD",
+  "seatbid": [{
+    "seat": "dsp-a-seat-12",
+    "bid": [{
+      "id": "bid-c41d",
+      "impid": "1",
+      "price": 2.40,             // CPM bid
+      "adid": "ad-8812",
+      "cid": "campaign-301",
+      "crid": "creative-7743",
+      "adomain": ["shoes.example"],
+      "w": 300, "h": 250,
+      "nurl": "https://win.dsp.example/w?b=bid-c41d&p=${AUCTION_PRICE}",
+      "burl": "https://win.dsp.example/b?b=bid-c41d&p=${AUCTION_PRICE}",
+      "adm": "&lt;a href=\"https://c.dsp.example/click?b=bid-c41d\"&gt;&lt;img src=\"https://cdn.dsp.example/7743.png\"&gt;&lt;/a&gt;&lt;img src=\"https://t.dsp.example/imp?b=bid-c41d\" width=\"1\" height=\"1\"&gt;"
+    }]
+  }]
+}</code></pre>
+        <div class="code-note"><code>nurl</code> = win notice, <code>burl</code> = billing notice (OpenRTB 2.5+). The exchange replaces <code>${AUCTION_PRICE}</code> with the clearing price. No bid → empty body, <code>204</code>.</div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:18px">
+      <div class="code">
+        <div class="code-head"><span class="verb">GET</span><b>/imp · /click</b><span>browser → event collector</span></div>
+<pre><code class="json">// GET /imp?b=bid-c41d&li=5501&cr=7743&sig=9a1f...   → 204
+// Collector appends to Kafka topic "impressions":
+{
+  "event_id": "0190a7e2-4c1b-7d3e-9f00-2b6c5d1e8a44",
+  "type": "impression",
+  "bid_id": "bid-c41d",
+  "line_item_id": 5501,
+  "creative_id": 7743,
+  "price_micros": 2400,          // $2.40 CPM → $0.0024 for this impression
+  "event_ts": 1763200000123,
+  "publisher_id": "pub-1042",
+  "geo": "IN-KA",
+  "device": "android-phone"
+}</code></pre>
+        <div class="code-note"><code>sig</code> is an HMAC over the parameters so beacons can’t be forged. <code>event_id</code> is the idempotency key for deduplication downstream.</div>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="verb">INT</span><b>Pacing allocation</b><span>pacing service → bidder</span></div>
+<pre><code class="json">// Pushed to every bidder every few seconds
+{
+  "epoch": 88213,                // monotonic; bidders drop older epochs
+  "valid_for_ms": 5000,          // fail-safe: stop spending after this
+  "allocations": [
+    {
+      "line_item_id": 5501,
+      "tokens_micros": 120000,   // this bidder may spend $0.12 this window
+      "pacing_multiplier": 0.85, // scale bids down: ahead of schedule
+      "state": "active"
+    },
+    { "line_item_id": 5502, "tokens_micros": 0, "state": "exhausted" }
+  ]
+}</code></pre>
+        <div class="code-note">An internal contract, not part of OpenRTB. The <code>valid_for_ms</code> lease is what makes a pacing-service outage safe: no fresh lease, no spend.</div>
+      </div>
+    </div>
+
+    <h3 class="subhead">Scaling</h3>
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">Bidders</span> Stateless, shared-nothing</h3>
+        <p>Every bidder holds the full campaign index and model in memory and needs only one remote read (the user profile). So the fleet scales linearly behind an L4 load balancer; autoscale on CPU and p99, not just QPS.</p>
+        <p>Keep the hot path allocation-light (pooled buffers, pre-parsed structs) — a GC pause is a batch of missed auctions.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">State</span> Push, don’t pull</h3>
+        <p>Campaign changes flow SQL → change stream → bidders as versioned deltas; a new bidder bootstraps from a snapshot then tails the stream. The profile store is sharded by user ID with replicas in each region.</p>
+        <p>Budget is the one piece of shared mutable state — and it is deliberately kept <i>off</i> the request path.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Pipeline</span> Scale by partition</h3>
+        <p>Kafka topics are partitioned by <code>bid_id</code>; stream-job parallelism matches partition count. Collectors are stateless. OLAP ingestion scales per topic partition; queries scale with historical nodes.</p>
+        <p>Load-shed deliberately: under pressure, drop the 1% no-bid sample first, never billable events.</p>
+      </div>
+    </div>
+
+    <h3 class="subhead">Failure modes</h3>
+    <div class="table-scroll">
+      <table class="modes">
+        <thead><tr><th>What breaks</th><th>Blast radius</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>Profile store slow / down</td><td>Every bid waits on the lookup → mass timeouts.</td><td>Hard 3–5 ms timeout and a circuit breaker; fall back to contextual-only bidding. Lower win quality beats zero bids.</td></tr>
+          <tr><td>Bidder node dies</td><td>In-flight requests on that node are lost (≈ a few thousand auctions).</td><td>Stateless nodes + health checks pull it from rotation in seconds. Its unspent token allocation simply expires with the lease.</td></tr>
+          <tr><td>Pacing service down</td><td>No fresh allocations; risk of overspend or of a full stop.</td><td>Leased allocations: bidders spend what they hold, then stop. Run pacing as a replicated service with a consistent store behind it.</td></tr>
+          <tr><td>Stale campaign snapshot</td><td>A paused line item keeps bidding; a new one never starts.</td><td>Version every snapshot; bidders report their version; alert on lag; refuse to bid if the snapshot is older than a threshold.</td></tr>
+          <tr><td>Kafka broker loss</td><td>Partitions briefly unavailable; collectors can’t ack.</td><td>RF 3, <code>min.insync.replicas=2</code>, <code>acks=all</code>. Collectors spill to local disk and replay; beacons are retried by signed URL.</td></tr>
+          <tr><td>Stream job lag</td><td>Dashboards stale; spend feedback late → pacing blind.</td><td>Alert on consumer lag. Pacing falls back to win-notice counts (pessimistic) and widens its safety margin until lag clears.</td></tr>
+          <tr><td>Duplicate or replayed events</td><td>Over-counted spend → over-billing.</td><td>Idempotent processing keyed on <code>event_id</code>; signed beacons with expiry; nightly batch recount from the data lake is the billing truth.</td></tr>
+          <tr><td>Region outage</td><td>All traffic from co-located exchanges fails.</td><td>Active-active regions; exchanges fail over by DNS / health. Budgets are split per region so no cross-region call is needed to bid.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- =========================== 5. Interviewer asks =========================== -->
+  <section class="wrap-narrow section" id="interview">
+    <div class="section-head"><span class="num">05</span><h2>Interviewer asks…</h2></div>
+    <p class="section-intro">Likely follow-ups. Try answering out loud before you expand each one.</p>
+    <div class="qa">
+
+      <details>
+        <summary><span class="q-num">Q1</span>Where is the bottleneck at 1M QPS, and how do you find it?</summary>
+        <div class="answer">
+          <p class="tag-line">BOTTLENECKS</p>
+          <p>Follow the request and ask what is <b>shared</b>. Bidders are stateless and scale out, so they are not it. The candidates are:</p>
+          <ul>
+            <li><b>The profile store</b> — the only remote call on the hot path. One slow shard stalls every request routed to it. Mitigate with a strict timeout, replicas, and a small in-process cache for very active users.</li>
+            <li><b>Network and connection handling</b> — 16 Gbps of JSON. Keep-alive pools, gzip, and early exit (most requests are rejected before any I/O) matter more than faster bid code.</li>
+            <li><b>Tail latency, not averages</b> — GC pauses and noisy neighbours turn a 10 ms median into a 150 ms p99.</li>
+          </ul>
+          <p>To find it: per-stage latency histograms inside the bidder plus the exchange-reported timeout rate, which is the only number that reflects what the customer sees.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q2</span>One advertiser generates 30% of events. How do you handle hot partitions in Kafka?</summary>
+        <div class="answer">
+          <p class="tag-line">HOT PARTITIONS</p>
+          <p>It depends on the partition key. If you keyed by <code>campaign_id</code>, that campaign’s partition is overloaded while others idle — consumer lag grows on one partition and you can’t fix it by adding consumers.</p>
+          <ul>
+            <li><b>Key by something high-cardinality</b> — <code>bid_id</code> or <code>event_id</code> — so load is uniform. You lose per-campaign ordering, which aggregation doesn’t need.</li>
+            <li><b>Aggregate in two stages</b>: pre-aggregate on the evenly distributed key (or a salted key such as <code>campaign_id#0..15</code>) in small windows, then combine partial counts by campaign. The second stage sees thousands of rows, not billions.</li>
+            <li>Keep an eye on <b>skew in the OLAP store</b> too — segment by time first, then hash.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q3</span>How would you go multi-region?</summary>
+        <div class="answer">
+          <p class="tag-line">MULTI-REGION</p>
+          <p>You have no choice on the serving side: a cross-continent round trip is 100+ ms, so <b>bidders must sit next to each exchange</b>. Run active-active regions, each fully able to bid alone:</p>
+          <ul>
+            <li><b>Campaign config</b>: one primary SQL database, replicated asynchronously to all regions; bidders read the local snapshot.</li>
+            <li><b>User profiles</b>: replicated per region; most users appear in one region, so asynchronous replication with last-write-wins is acceptable.</li>
+            <li><b>Budget</b>: the hard part. A central pacing service splits each budget into <b>per-region allocations</b> based on recent traffic and rebalances every few seconds. Regions never call each other to bid.</li>
+            <li><b>Events</b>: each region has its own Kafka; mirror to a central cluster for global aggregation and billing.</li>
+          </ul>
+          <p>If a region is cut off it spends its last allocation and stops — bounded overspend, no split-brain.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q4</span>The exchange’s invoice says 1.02M impressions; your system counted 1.00M. How do you reconcile billing?</summary>
+        <div class="answer">
+          <p class="tag-line">BILLING RECONCILIATION</p>
+          <p>Small discrepancies are normal — the two sides count at different moments (auction win vs pixel render) and filter fraud differently. Contracts usually allow a tolerance of a few percent. The job is to keep it small and explainable:</p>
+          <ul>
+            <li><b>Keep raw events immutable</b> in the data lake. Billing is a deterministic batch job over them, never the streaming numbers.</li>
+            <li><b>Join on a shared key</b> — the bid ID travels through the win notice, the markup and the beacon — and compare with the exchange’s log-level report. Bucket the differences: won-but-never-rendered, duplicates, invalid traffic, late arrivals.</li>
+            <li><b>Agree on the billable event</b> up front (<code>burl</code> / rendered impression), and on whose count is the source of truth.</li>
+            <li>Alert when the discrepancy for any partner drifts — a sudden jump usually means a broken pixel or a dedup bug, not fraud.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q5</span>A DSP is having an outage and times out on every request. What does the exchange do?</summary>
+        <div class="answer">
+          <p class="tag-line">DSP OUTAGE</p>
+          <p>For a single auction nothing special: <code>tmax</code> fires and the auction closes without that DSP. The danger is the aggregate — thousands of connections and threads tied up waiting on a dead endpoint.</p>
+          <ul>
+            <li><b>Circuit breaker per DSP</b>: when timeout / error rate crosses a threshold, stop sending. Probe with a trickle of traffic and ramp back gradually once it recovers.</li>
+            <li><b>Bulkheads</b>: separate connection pools and concurrency limits per DSP so one failure can’t exhaust shared resources.</li>
+            <li><b>Adaptive throttling</b> in normal operation — QPS sent to each DSP follows its recent response rate.</li>
+          </ul>
+          <p>From the DSP’s side: shed load early (fast 204 under overload is better than a slow bid), and expect the exchange to throttle you for a while after recovery.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q6</span>How do you guarantee a campaign never overspends its budget?</summary>
+        <div class="answer">
+          <p class="tag-line">BUDGET PACING</p>
+          <p>You can’t guarantee <i>zero</i> without a synchronous global check on every bid, which the latency budget rules out. So aim for a <b>small, bounded</b> overspend and say what the bound is:</p>
+          <ul>
+            <li>Central pacing service hands out short-lived <b>token allocations</b> to each bidder. A bidder can only spend tokens it holds.</li>
+            <li>Maximum overspend ≈ outstanding allocations + bids won but not yet reported. Shrink allocations as the budget nears its end.</li>
+            <li>Track <b>pending</b> (won) separately from <b>confirmed</b> (rendered) spend, and stop at ~98% to leave room for in-flight wins.</li>
+            <li>Whatever leaks through is absorbed as a business rule: the platform doesn’t bill beyond the budget.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q7</span>Why not exactly-once processing for impression counts?</summary>
+        <div class="answer">
+          <p class="tag-line">DELIVERY SEMANTICS</p>
+          <p>Exactly-once inside a stream processor is achievable (checkpoints + transactional writes), but it covers only the Kafka → job → sink segment. A browser retrying a beacon, or a collector retrying a produce after a timeout, still creates duplicates upstream of it — and transactions add latency and coupling.</p>
+          <p>The robust design is <b>at-least-once delivery plus idempotence</b>: every event carries a unique <code>event_id</code> minted when the bid is created; the stream job deduplicates on it within a TTL window; sinks upsert by key. You get exactly-once <i>results</i> without depending on every hop being transactional. The nightly batch recount catches anything outside the dedup window.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q8</span>Why a first-price auction? What changes for the bidder?</summary>
+        <div class="answer">
+          <p class="tag-line">AUCTION DESIGN</p>
+          <p>In a second-price auction the winner pays just above the runner-up, so bidding your true value is optimal. But when a request passes through several intermediaries, each running its own auction with opaque floors, buyers couldn’t verify what “second price” meant. First-price is simple and auditable: <b>you pay what you bid</b>.</p>
+          <p>The cost moves to the buyer: bidding true value now overpays. DSPs add <b>bid shading</b> — a model of the win-price distribution per publisher / slot that picks the lowest bid likely to win. It needs loss feedback (did we lose, and ideally at what price), which is why bid and win logs are worth storing.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q9</span>The segment cache misses, or a brand-new user shows up. Now what?</summary>
+        <div class="answer">
+          <p class="tag-line">COLD START</p>
+          <p>Never block. A miss returns in the same few milliseconds as a hit, and the bidder falls back to <b>contextual targeting</b> — page category, geo, device, time — bidding lower because it knows less. Campaigns that strictly require an audience segment skip this request.</p>
+          <ul>
+            <li><b>New users</b>: write a minimal profile asynchronously so the next request hits.</li>
+            <li><b>Cold cache after a deploy or region launch</b>: preload from a snapshot and ramp traffic gradually; watch hit rate before going to 100%.</li>
+            <li><b>Store down</b>: circuit-break to contextual-only so revenue degrades instead of disappearing.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q10</span>Where do you put fraud and bot detection?</summary>
+        <div class="answer">
+          <p class="tag-line">FRAUD FILTERING</p>
+          <p>Both places, with different jobs:</p>
+          <ul>
+            <li><b>Inline (pre-bid)</b>: only checks that cost microseconds — IP / user-agent block lists, known datacenter ranges, publisher allow lists, simple rate limits. Goal: don’t spend money on obvious junk.</li>
+            <li><b>Async (post-bid)</b>: heavier models over the event stream — click-timing patterns, impossible impression rates per device, traffic-source anomalies. Results feed back as updated block lists, and as <b>refunds / non-billable flags</b> on events already counted.</li>
+          </ul>
+          <p>The tradeoff is latency vs how much fraud you pay for before catching it. Because events are immutable, an invalid-traffic verdict is a new correction event that the billing batch applies.</p>
+        </div>
+      </details>
+
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <span>System Design Visualized — built from public, generic knowledge (OpenRTB 2.x). Numbers are illustrative.</span>
+    <a href="../index.html">← All designs</a>
+  </div>
+</footer>
+
+<script src="../assets/engine.js"></script>
+<script src="rtb.config.js"></script>
+<script>SDV.mount(document.getElementById('walkthrough'), window.RTB_CONFIG);</script>
+</body>
+</html>
