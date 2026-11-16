@@ -62,8 +62,8 @@
           <svg viewBox="0 0 420 200">
             <path id="art-p1" class="a-line" d="M70,50 H130 M190,50 H250 M310,50 H350"/>
             <path class="a-line" d="M220,68 V150 H190 M130,150 H70"/>
-            <path id="art-hot" d="M40,50 H380" fill="none"/>
-            <path id="art-win" d="M380,50 H40" fill="none"/>
+            <path id="art-hot" d="M70,50 H350" fill="none"/>
+            <path id="art-win" d="M350,50 H70" fill="none"/>
             <path id="art-async" d="M220,68 V150 H40" fill="none"/>
             <rect class="a-box" x="10" y="32" width="60" height="36" rx="8"/><text class="a-text" x="40" y="54">Page</text>
             <rect class="a-box" x="130" y="32" width="60" height="36" rx="8"/><text class="a-text" x="160" y="54">SSP</text>
@@ -77,15 +77,34 @@
           </svg>
         </div>
       </a>
+      <a class="card card-live" href="designs/rate-limiter.html">
+        <div class="card-body">
+          <span class="card-tag">LLD · playground + 11 steps</span>
+          <h3>Rate Limiter</h3>
+          <p>Try token bucket, fixed window and sliding window side by side, then step through the classes: one request allowed, one rejected with a 429, and what happens when the counter store is down.</p>
+          <ul class="chips" style="margin-top:4px">
+            <li class="chip">token bucket</li><li class="chip">Strategy pattern</li><li class="chip">concurrency</li><li class="chip">Redis Lua</li>
+          </ul>
+          <span class="card-cta">Start the walkthrough <span aria-hidden="true">→</span></span>
+        </div>
+        <!-- Decorative: tokens dripping into a bucket. -->
+        <div class="card-art" aria-hidden="true">
+          <svg viewBox="0 0 420 200">
+            <path id="art-drip" d="M210,10 V118" fill="none"/>
+            <path class="a-bucket" d="M150,70 L165,180 H255 L270,70"/>
+            <path class="a-line" d="M140,70 H280"/>
+            <circle class="a-token" cx="185" cy="165" r="9"/><circle class="a-token" cx="210" cy="165" r="9"/><circle class="a-token" cx="235" cy="165" r="9"/>
+            <circle class="a-token" cx="197" cy="146" r="9"/><circle class="a-token" cx="223" cy="146" r="9"/>
+            <circle class="a-token a-token-move" r="9"><animateMotion dur="1.8s" repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;0.6;1" calcMode="linear"><mpath href="#art-drip"/></animateMotion></circle>
+            <text class="a-text" x="330" y="120">capacity 5</text><text class="a-text" x="330" y="138">refill 0.5/s</text>
+            <text class="a-text" x="85" y="120">1 request</text><text class="a-text" x="85" y="138">= 1 token</text>
+          </svg>
+        </div>
+      </a>
     </div>
 
     <h2 class="section-label">Coming soon</h2>
     <div class="cards">
-      <div class="card card-soon">
-        <span class="card-tag">LLD</span>
-        <h3>Rate Limiter</h3>
-        <p>Token bucket, sliding window and friends — classes, concurrency, and where the counters live.</p>
-      </div>
       <div class="card card-soon">
         <span class="card-tag">HLD</span>
         <h3>URL Shortener</h3>

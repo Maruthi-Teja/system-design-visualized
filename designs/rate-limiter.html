@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design a Rate Limiter (LLD) · System Design Visualized</title>
+  <meta name="description" content="Interactive low-level design of a rate limiter: try token bucket, fixed window and sliding window algorithms, then step through the classes, concurrency and distributed counter storage.">
+  <meta name="theme-color" content="#0a0e14">
+  <!-- Set the theme before first paint to avoid a flash. -->
+  <script>(function(){var t;try{t=localStorage.getItem('sdv-theme')}catch(e){}if(!t)t=window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t})()</script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0e14'/%3E%3Cpath d='M8 10h6v5H8zM18 17h6v5h-6z' fill='none' stroke='%235eead4' stroke-width='2'/%3E%3Cpath d='M14 12.5h4v7' fill='none' stroke='%23fbbf24' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="../index.html">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--surface-2)"/><path d="M8 10h6v5H8zM18 17h6v5h-6z" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M14 12.5h4v7" fill="none" stroke="var(--money)" stroke-width="2"/></svg>
+      <span>System Design <small>Visualized</small></span>
+    </a>
+    <nav class="topnav" aria-label="On this page">
+      <a href="#requirements">Requirements</a>
+      <a href="#algorithms">Algorithms</a>
+      <a href="#walkthrough-section">Walkthrough</a>
+      <a href="#deep-dive">Deep dive</a>
+      <a href="#interview">Interviewer asks</a>
+    </nav>
+    <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle dark / light mode">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <div class="wrap page-hero">
+    <p class="crumb"><a href="../index.html">All designs</a> / LLD</p>
+    <h1>Design a Rate Limiter</h1>
+    <p class="lede">Let a caller make N requests per window and politely refuse the rest — correctly under concurrency, across many servers, and without becoming the slowest part of every request.</p>
+    <ul class="chips">
+      <li class="chip"><b>LLD</b> · classes &amp; interfaces</li>
+      <li class="chip">token bucket</li>
+      <li class="chip">Strategy pattern</li>
+      <li class="chip">atomic Redis script</li>
+      <li class="chip"><b>&lt; 2 ms</b> overhead</li>
+    </ul>
+  </div>
+
+  <!-- ============================ 1. Requirements ============================ -->
+  <section class="wrap section" id="requirements">
+    <div class="section-head"><span class="num">01</span><h2>Requirements</h2></div>
+    <p class="section-intro">In an LLD round, start by pinning down behaviour and the extension points — the interviewer is checking whether your classes can absorb the next requirement without a rewrite.</p>
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">Functional</span></h3>
+        <ul class="checklist">
+          <li><b>Limit by identity</b> <span>— API key, user, tenant or IP, per route.</span></li>
+          <li><b>Configurable rules</b> <span>— e.g. 100 req/min for free plan, 1,000 for paid; changeable at runtime.</span></li>
+          <li><b>Pluggable algorithms</b> <span>— token bucket, fixed window, sliding window.</span></li>
+          <li><b>Clear rejection</b> <span>— <code>429</code> with <code>Retry-After</code> and remaining-quota headers.</span></li>
+          <li><b>Weighted requests</b> <span>— an expensive call can cost more than one permit.</span></li>
+          <li><b>Works across servers</b> <span>— one limit shared by the whole fleet.</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Non-functional</span></h3>
+        <ul class="checklist">
+          <li><b>Low overhead</b> <span>— a couple of milliseconds at most on every request.</span></li>
+          <li><b>Thread-safe</b> <span>— no lost updates when many threads hit the same key.</span></li>
+          <li><b>Accurate enough</b> <span>— never wildly over the limit; small, bounded error is acceptable.</span></li>
+          <li><b>Fault tolerant</b> <span>— if the counter store is down, the API stays up.</span></li>
+          <li><b>Memory bounded</b> <span>— state for idle callers is evicted.</span></li>
+          <li><b>Testable</b> <span>— time is injected, not read from a global clock.</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Out of scope</span></h3>
+        <ul class="checklist is-out">
+          <li>DDoS mitigation at the network layer</li>
+          <li>Authentication (we receive an identity)</li>
+          <li>Billing / monthly usage quotas</li>
+          <li>Admin UI for editing rules</li>
+          <li>Client-side throttling libraries</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 2. Algorithms ============================= -->
+  <section class="wrap section" id="algorithms">
+    <div class="section-head"><span class="num">02</span><h2>Algorithms — try them</h2></div>
+    <p class="section-intro">Three algorithms, one limit: <b>5 requests per 10 seconds</b>. Send requests and watch what each one lets through. Circles were allowed, squares were rejected.</p>
+
+    <div class="sim" id="sim">
+      <div class="sim-tabs" role="tablist" aria-label="Algorithm">
+        <button class="sim-tab" type="button" role="tab" data-algo="token">Token bucket</button>
+        <button class="sim-tab" type="button" role="tab" data-algo="fixed">Fixed window</button>
+        <button class="sim-tab" type="button" role="tab" data-algo="sliding">Sliding window counter</button>
+      </div>
+      <div class="sim-body">
+        <p class="sim-desc"></p>
+        <div>
+          <div class="sim-gauge-head"><span></span><b></b></div>
+          <div class="sim-track"><div class="sim-fill"></div></div>
+        </div>
+        <div>
+          <div class="sim-strip" aria-label="Requests over the last 20 seconds"></div>
+          <div class="sim-strip-labels"><span>20 s ago</span><span>10 s ago</span><span>now</span></div>
+        </div>
+        <div class="sim-actions">
+          <button class="sdv-btn sdv-btn-primary" type="button" data-sim="send">Send request</button>
+          <button class="sdv-btn" type="button" data-sim="burst">Burst ×5</button>
+          <button class="sdv-btn sdv-btn-ghost" type="button" data-sim="reset">Reset</button>
+          <span class="sim-stats" aria-live="polite"></span>
+        </div>
+        <p class="sim-try"></p>
+      </div>
+    </div>
+    <noscript><p class="block">The playground needs JavaScript. The comparison below works without it.</p></noscript>
+
+    <h3 class="subhead">Side by side</h3>
+    <div class="table-scroll">
+      <table class="modes is-compare">
+        <thead><tr><th>Algorithm</th><th>State per key</th><th>Bursts</th><th>Accuracy</th><th>Use it when</th></tr></thead>
+        <tbody>
+          <tr><td>Token bucket</td><td>2 numbers: tokens, last refill time</td><td><span class="good">Allowed</span> up to capacity</td><td>Exact for the average rate</td><td>Default for public APIs — tolerates natural bursts.</td></tr>
+          <tr><td>Leaky bucket</td><td>Queue (or 2 numbers as a meter)</td><td><span class="bad">Smoothed away</span></td><td>Exact output rate</td><td>The downstream needs a steady rate, e.g. calling a fragile third-party API.</td></tr>
+          <tr><td>Fixed window</td><td>1 counter + TTL</td><td><span class="bad">Up to 2× at window edges</span></td><td>Poor at boundaries</td><td>Simple quotas where precision doesn’t matter; cheapest in Redis (<code>INCR</code> + <code>EXPIRE</code>).</td></tr>
+          <tr><td>Sliding window log</td><td>A timestamp per request</td><td>None beyond the limit</td><td><span class="good">Exact</span></td><td>Low limits where correctness matters: login attempts, OTP sends.</td></tr>
+          <tr><td>Sliding window counter</td><td>2 counters</td><td>None beyond the limit (approximately)</td><td>Approximate — assumes the previous window was evenly spread</td><td>High-volume “N per minute” limits: near-exact at fixed-window cost.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================= 3. Walkthrough ============================= -->
+  <section class="wrap section" id="walkthrough-section">
+    <div class="section-head"><span class="num">03</span><h2>Class walkthrough</h2></div>
+    <p class="section-intro">The same classes, three scenarios: a request that passes, one that is rejected, and what happens when the counter store is down. Click any class to jump to it.</p>
+    <div id="walkthrough"></div>
+    <noscript><p class="block">The interactive walkthrough needs JavaScript.</p></noscript>
+  </section>
+
+  <!-- ============================== 4. Deep dive ============================== -->
+  <section class="wrap section" id="deep-dive">
+    <div class="section-head"><span class="num">04</span><h2>Deep dive</h2></div>
+
+    <h3 class="subhead">Class design</h3>
+    <p class="section-intro">Small interfaces at the seams that change: the algorithm, the storage, and how a caller is identified. Everything that crosses a seam is an immutable value.</p>
+    <div class="entities">
+      <div class="entity">
+        <header>RateLimiter <span>«interface»</span></header>
+        <ul>
+          <li class="pk"><b>tryAcquire(key, rule, permits)</b><i>→ Decision</i></li>
+        </ul>
+        <footer>The only thing the filter knows about. One method, non-blocking, never throws for a denial. Implementations: <code>TokenBucketLimiter</code>, <code>FixedWindowLimiter</code>, <code>SlidingWindowLimiter</code>.</footer>
+      </div>
+      <div class="entity">
+        <header>RateLimitRule <span>immutable value</span></header>
+        <ul>
+          <li class="pk"><b>id</b><i>String</i></li>
+          <li><b>algorithm</b><i>enum</i></li>
+          <li><b>capacity</b><i>long · max burst</i></li>
+          <li><b>refillPerSec</b><i>double</i></li>
+          <li><b>window</b><i>Duration · window algorithms</i></li>
+        </ul>
+        <footer>Pure configuration. Holds no counters, so it can be swapped at runtime.</footer>
+      </div>
+      <div class="entity">
+        <header>Decision <span>immutable value</span></header>
+        <ul>
+          <li><b>allowed</b><i>boolean</i></li>
+          <li><b>remaining</b><i>long</i></li>
+          <li><b>retryAfter</b><i>Duration</i></li>
+        </ul>
+        <footer>Richer than a boolean so the filter can set headers. Built via <code>Decision.allow(n)</code> / <code>Decision.deny(wait)</code>.</footer>
+      </div>
+      <div class="entity">
+        <header>CounterStore <span>«interface»</span></header>
+        <ul>
+          <li class="pk"><b>consume(key, rule, permits)</b><i>→ Decision</i></li>
+        </ul>
+        <footer>Hides <i>where</i> state lives. The operation is “refill and take” as one atomic unit — never separate get and set. Implementations: <code>RedisStore</code>, <code>LocalStore</code>, and a <code>FallbackStore</code> decorator.</footer>
+      </div>
+      <div class="entity">
+        <header>KeyResolver <span>«interface»</span></header>
+        <ul>
+          <li class="pk"><b>resolve(request)</b><i>→ String</i></li>
+        </ul>
+        <footer>Implementations: <code>ApiKeyResolver</code>, <code>UserIdResolver</code>, <code>IpResolver</code>, plus a composite that tries them in order.</footer>
+      </div>
+      <div class="entity">
+        <header>RuleRepository <span>class</span></header>
+        <ul>
+          <li class="pk"><b>find(identity, route)</b><i>→ RateLimitRule</i></li>
+          <li><b>reload(newRules)</b><i>atomic swap</i></li>
+          <li class="fk"><b>current</b><i>volatile RuleSet</i></li>
+        </ul>
+        <footer>Read on every request, written rarely: an immutable snapshot behind one volatile reference.</footer>
+      </div>
+    </div>
+
+    <div class="grid-3" style="margin-top:18px">
+      <div class="block">
+        <h3><span class="pill">Pattern</span> Strategy</h3>
+        <p>Each algorithm is a <code>RateLimiter</code>. The rule picks one; the filter never branches on algorithm type. Adding “leaky bucket” touches zero existing classes — the open/closed principle, concretely.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Pattern</span> Decorator</h3>
+        <p><code>FallbackStore</code> wraps a primary and a secondary <code>CounterStore</code> and adds the timeout and circuit breaker. Metrics and shadow mode are further decorators around <code>RateLimiter</code> — behaviour added without editing the algorithms.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Pattern</span> Chain of responsibility</h3>
+        <p>The filter sits in the request chain and either passes the request on or ends it with a 429. Several limits (per user, per IP, global) are just several rules checked in order — stop at the first denial.</p>
+      </div>
+    </div>
+
+    <h3 class="subhead">Code sketch</h3>
+    <div class="grid-2">
+      <div class="code">
+        <div class="code-head"><span class="verb">JAVA</span><b>In-memory token bucket</b><span>thread-safe</span></div>
+<pre><code>public interface RateLimiter {
+  Decision tryAcquire(String key, RateLimitRule rule, int permits);
+}
+
+/** One bucket per key. All state changes happen under the bucket's own lock. */
+final class TokenBucket {
+  private double tokens;
+  private long lastRefillNanos;
+
+  TokenBucket(RateLimitRule rule, long now) {
+    this.tokens = rule.capacity();      // start full
+    this.lastRefillNanos = now;
+  }
+
+  synchronized Decision tryConsume(RateLimitRule rule, int permits, long now) {
+    // Lazy refill: no background thread, just maths on each call.
+    double perNano = rule.refillPerSec() / 1_000_000_000.0;
+    tokens = Math.min(rule.capacity(), tokens + (now - lastRefillNanos) * perNano);
+    lastRefillNanos = now;
+
+    if (tokens &gt;= permits) {
+      tokens -= permits;
+      return Decision.allow((long) tokens);
+    }
+    long waitNanos = (long) Math.ceil((permits - tokens) / perNano);
+    return Decision.deny(Duration.ofNanos(waitNanos));
+  }
+}
+
+final class TokenBucketLimiter implements RateLimiter {
+  private final ConcurrentHashMap&lt;String, TokenBucket&gt; buckets = new ConcurrentHashMap&lt;&gt;();
+  private final LongSupplier clock;     // System::nanoTime in prod, a fake in tests
+
+  TokenBucketLimiter(LongSupplier clock) { this.clock = clock; }
+
+  @Override
+  public Decision tryAcquire(String key, RateLimitRule rule, int permits) {
+    long now = clock.getAsLong();
+    TokenBucket bucket = buckets.computeIfAbsent(key, k -&gt; new TokenBucket(rule, now));
+    return bucket.tryConsume(rule, permits, now);
+  }
+}</code></pre>
+        <div class="code-note">The lock is <b>per bucket</b>, so different callers never contend. <code>computeIfAbsent</code> guarantees one bucket per key even when two threads arrive together. A real version also evicts idle buckets (see below).</div>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="verb">LUA</span><b>Distributed token bucket</b><span>runs inside Redis</span></div>
+<pre><code>-- KEYS[1] = bucket key, e.g. rl:{abc123}:POST:/orders
+-- ARGV    = capacity, refill_per_sec, permits
+
+local capacity = tonumber(ARGV[1])
+local rate     = tonumber(ARGV[2])
+local permits  = tonumber(ARGV[3])
+
+-- Use the Redis server's clock so app servers with
+-- skewed clocks can't disagree about how much to refill.
+local t   = redis.call('TIME')
+local now = t[1] * 1000 + math.floor(t[2] / 1000)   -- ms
+
+local state  = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(state[1]) or capacity        -- new key: full
+local ts     = tonumber(state[2]) or now
+
+-- Lazy refill, capped at capacity.
+tokens = math.min(capacity, tokens + (now - ts) / 1000 * rate)
+
+local allowed = tokens &gt;= permits
+if allowed then
+  tokens = tokens - permits
+end
+
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+-- Idle buckets expire once they would be full again anyway.
+redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate * 1000) * 2)
+
+local retry_ms = 0
+if not allowed then
+  retry_ms = math.ceil((permits - tokens) / rate * 1000)
+end
+return { allowed and 1 or 0, math.floor(tokens), retry_ms }</code></pre>
+        <div class="code-note">Redis runs a script start-to-finish with nothing interleaved, so the read-modify-write is atomic without any lock. Load it once and call it by hash (<code>EVALSHA</code>). The <code>{abc123}</code> hash tag keeps a caller’s keys on one cluster shard.</div>
+      </div>
+    </div>
+
+    <h3 class="subhead">Concurrency</h3>
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill is-danger">The bug</span> Check-then-act</h3>
+        <p>Two threads read <code>tokens = 1</code>, both see “enough”, both subtract. Two requests pass on one token. Any design where the check and the update are separate steps has this race — in memory or over the network.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill">In one process</span> Lock small, or don’t lock</h3>
+        <p>A lock <b>per bucket</b> (as above) is short and uncontended across callers. A single global lock would serialise every request. For hot keys, replace the lock with a compare-and-set loop on an immutable <code>(tokens, timestamp)</code> state — lock-free, retries only on a real collision.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Across processes</span> One atomic command</h3>
+        <p>Push the whole decision into the store: a Lua script, or <code>INCR</code> for window counters (atomic by itself). Avoid distributed locks here — they add round trips, and a crashed holder blocks the key until the lock expires.</p>
+      </div>
+    </div>
+
+    <h3 class="subhead">Where the counters live</h3>
+    <div class="table-scroll">
+      <table class="modes is-compare">
+        <thead><tr><th>Option</th><th>How it works</th><th>Accuracy</th><th>Cost per request</th><th>Fails how</th></tr></thead>
+        <tbody>
+          <tr><td>In-process memory</td><td>Each server keeps its own buckets and enforces <code>limit ÷ N</code>.</td><td><span class="bad">Loose</span> — depends on even load balancing; changes when N changes.</td><td>Nanoseconds, no I/O</td><td>State lost on restart (buckets start full). Otherwise nothing to fail.</td></tr>
+          <tr><td>Central store (Redis)</td><td>Every decision is one atomic script call against a shared counter.</td><td><span class="good">Exact</span> across the fleet</td><td>~1 ms network round trip</td><td>Store outage or latency hits every request — needs a timeout and a fallback.</td></tr>
+          <tr><td>Hybrid: local batches</td><td>Each server leases a chunk of tokens from the store and spends it locally; returns for more when empty.</td><td>Bounded error — at most the outstanding leases</td><td>Amortised: one store call per batch</td><td>Degrades to in-process behaviour when the store is unreachable.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subhead">Failure modes &amp; edge cases</h3>
+    <div class="table-scroll">
+      <table class="modes">
+        <thead><tr><th>What goes wrong</th><th>Effect</th><th>Handling</th></tr></thead>
+        <tbody>
+          <tr><td>Store slow or down</td><td>Every request waits on the limiter.</td><td>Strict timeout (a few ms), circuit breaker, fall back to local buckets. Decide fail-open vs fail-closed <i>per rule</i>.</td></tr>
+          <tr><td>Unbounded keys</td><td>One bucket per caller ever seen → memory grows forever.</td><td>TTL in Redis; in memory, evict buckets idle long enough to be full again (a size-bounded cache with expire-after-access).</td></tr>
+          <tr><td>Clock skew / jumps</td><td>Negative or huge elapsed time → wrong refill.</td><td>One clock source: Redis <code>TIME</code> for shared state, a monotonic clock (<code>nanoTime</code>) locally. Clamp elapsed time at zero.</td></tr>
+          <tr><td>Hot key</td><td>One tenant’s bucket takes most of the traffic on one Redis shard.</td><td>Local pre-check: once a key is known to be exhausted, deny locally until its retry time without calling the store.</td></tr>
+          <tr><td>Thundering herd on reset</td><td>All blocked clients retry at the same instant.</td><td>Return <code>Retry-After</code>; document jittered exponential backoff; token bucket refills gradually, which helps by itself.</td></tr>
+          <tr><td>Bad rule pushed</td><td>A typo sets a limit of 0 and blocks everyone.</td><td>Validate before swapping, keep the last good snapshot, support shadow mode (log would-be denials) for new rules.</td></tr>
+          <tr><td>Deploy / restart</td><td>In-memory buckets reset to full → brief over-allowance.</td><td>Acceptable for most limits; anything strict must live in the shared store.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- =========================== 5. Interviewer asks =========================== -->
+  <section class="wrap-narrow section" id="interview">
+    <div class="section-head"><span class="num">05</span><h2>Interviewer asks…</h2></div>
+    <p class="section-intro">Likely follow-ups. Try answering out loud before you expand each one.</p>
+    <div class="qa">
+
+      <details>
+        <summary><span class="q-num">Q1</span>Two requests for the same key arrive at the same instant with one token left. Walk me through what happens.</summary>
+        <div class="answer">
+          <p class="tag-line">RACE CONDITIONS</p>
+          <p><b>In one process:</b> both threads find the same <code>TokenBucket</code> (<code>computeIfAbsent</code> guarantees a single instance) and call a <code>synchronized</code> method. One enters, refills, takes the token, leaves 0. The second then enters, sees 0, is denied. Correct because check and decrement are inside one critical section.</p>
+          <p><b>Across servers:</b> both send the Lua script to Redis. Redis executes scripts one at a time, so the outcome is the same — one allowed, one denied.</p>
+          <p>What breaks it: reading the count, deciding in application code, then writing it back. Name that as check-then-act and you’ve answered the real question.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q2</span>Why token bucket? When would you choose something else?</summary>
+        <div class="answer">
+          <p class="tag-line">ALGORITHM CHOICE</p>
+          <p>Real clients are bursty — a page load fires ten calls at once, then nothing. Token bucket allows that burst (up to capacity) while holding the long-run average, with two numbers of state and O(1) work.</p>
+          <ul>
+            <li><b>Strict “N per window, no bursts”</b> (login attempts, SMS sends): sliding window log for exactness at low limits, sliding window counter at high volume.</li>
+            <li><b>Downstream needs a smooth rate</b>: leaky bucket, which queues and drains at a constant pace.</li>
+            <li><b>Rough daily quota</b>: fixed window — simplest, and edge bursts don’t matter at that scale.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q3</span>A Redis call on every request is too slow for us. Now what?</summary>
+        <div class="answer">
+          <p class="tag-line">REDUCING STORE CALLS</p>
+          <p>Trade a little accuracy for far fewer round trips:</p>
+          <ul>
+            <li><b>Token leasing</b>: a server takes, say, 50 tokens from the shared bucket in one call and spends them locally. Worst-case over-allowance is the sum of unspent leases, so size the lease as a small fraction of the limit.</li>
+            <li><b>Local deny cache</b>: once the store says “empty until T”, reject locally until T. Abusive keys — the busiest ones — stop costing store calls at all.</li>
+            <li><b>Async sync</b>: count locally and push deltas every 100 ms or so; fine for soft limits.</li>
+          </ul>
+          <p>Also check the basics first: connection pooling, pipelining, and Redis in the same zone. One millisecond is usually acceptable.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q4</span>Redis is down. Do you fail open or fail closed?</summary>
+        <div class="answer">
+          <p class="tag-line">FAILURE POLICY</p>
+          <p>It depends on what the limit protects, so make it a property of the rule rather than a global switch:</p>
+          <ul>
+            <li><b>Fail open</b> for ordinary API fairness limits — availability matters more than perfect fairness for a few minutes.</li>
+            <li><b>Fail closed</b> for security or cost limits: login attempts, password reset, anything that spends money per call.</li>
+            <li><b>Better than either</b>: fall back to per-server local limits so there is still <i>some</i> ceiling, and rely on other defences (autoscaling, load shedding, circuit breakers) for the rest.</li>
+          </ul>
+          <p>Whichever you choose, put a tight timeout and a circuit breaker on the store so a slow Redis doesn’t become a slow API.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q5</span>We have 10 million distinct API keys. How much memory is this, and how do you keep it bounded?</summary>
+        <div class="answer">
+          <p class="tag-line">MEMORY</p>
+          <p>Token bucket state is two numbers. In Redis, a small hash plus the key name is on the order of 100–150 bytes, so 10M <i>active</i> keys is roughly 1–1.5 GB — fine for one node, comfortable when sharded.</p>
+          <p>But you rarely hold all of them: a bucket that has been idle long enough to be full again carries no information — deleting it and recreating it full gives the same result. So set a TTL of about twice the time-to-full, and only recently active callers occupy memory.</p>
+          <p>In-process, use a size-bounded cache with expire-after-access instead of a bare map. Sliding window <i>log</i> is the one to avoid at this scale — it stores a timestamp per request.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q6</span>How do you support several limits at once — per user, per IP, and a global cap?</summary>
+        <div class="answer">
+          <p class="tag-line">MULTIPLE RULES</p>
+          <p><code>RuleRepository</code> returns a <b>list</b> of applicable rules, each with its own key. The filter checks them all and denies if any denies, returning the longest <code>retryAfter</code>.</p>
+          <p>The subtlety: if rule 1 allows (and takes a token) but rule 2 denies, the caller was charged for a request that never ran. Options:</p>
+          <ul>
+            <li>Check all rules in <b>one Lua script</b> — take tokens only if every bucket has enough. Requires the keys to live on the same shard (hash tags).</li>
+            <li>Order rules from most to least likely to deny, and accept the small leak.</li>
+            <li>Refund on later denial — a second call, and not atomic.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q7</span>App servers have slightly different clocks. Does that matter?</summary>
+        <div class="answer">
+          <p class="tag-line">TIME</p>
+          <p>Yes, if each server passes its own timestamp to shared state. A server whose clock is 500 ms ahead refills tokens that haven’t been earned; the next call from a server that is behind computes negative elapsed time.</p>
+          <p>Fixes: take time from <b>one source</b> — the store’s own clock (<code>TIME</code> inside the script) — and clamp elapsed time to be non-negative. For local buckets use a <b>monotonic</b> clock, not wall-clock time, so NTP corrections and DST changes can’t move it backwards.</p>
+          <p>And inject the clock as a dependency: that is what makes the limiter testable without sleeping.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q8</span>How would you test this?</summary>
+        <div class="answer">
+          <p class="tag-line">TESTING</p>
+          <ul>
+            <li><b>Unit tests with a fake clock</b>: start full, drain, advance time by exactly one refill interval, assert one more request passes. No <code>sleep()</code>, no flaky tests.</li>
+            <li><b>Boundary cases</b>: capacity 0, permits greater than capacity (must never be allowed — fail fast), time going backwards, very long idle periods (no overflow, cap at capacity).</li>
+            <li><b>Concurrency test</b>: N threads behind a latch fire at one bucket with K tokens and a frozen clock; assert <i>exactly</i> K were allowed. Run it thousands of times.</li>
+            <li><b>Contract tests</b> shared by every <code>CounterStore</code> implementation, run against a real Redis in a container for the Lua script.</li>
+            <li><b>Shadow mode in production</b>: log would-be denials before enforcing a new rule.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q9</span>What should a client do when it gets a 429 — and what do you send to help it?</summary>
+        <div class="answer">
+          <p class="tag-line">API CONTRACT</p>
+          <p>Send <code>429 Too Many Requests</code> with <code>Retry-After</code> (seconds), plus quota headers on every response — limit, remaining, and time to reset — so clients can slow down <i>before</i> hitting the wall. Include a small JSON body naming the rule that was hit; it saves support tickets.</p>
+          <p>The client should wait at least <code>Retry-After</code>, then retry with <b>exponential backoff and jitter</b> so that a fleet of blocked clients doesn’t return in one synchronised wave. Only retry idempotent requests automatically.</p>
+          <p>Don’t use 503 for this: 429 says “you are over <i>your</i> limit”, 503 says “the service is unhealthy” — monitoring and clients treat them differently.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q10</span>How would you extend this to limit concurrent requests instead of request rate?</summary>
+        <div class="answer">
+          <p class="tag-line">EXTENSIBILITY</p>
+          <p>A concurrency limit is a <b>semaphore</b>, not a rate: acquire on entry, release on completion. It doesn’t fit <code>tryAcquire</code> alone because something must be given back.</p>
+          <p>Extend the design rather than bend it: have <code>tryAcquire</code> return a <code>Permit</code> that is <code>AutoCloseable</code>. For rate algorithms <code>close()</code> does nothing; for the concurrency limiter it releases the slot. The filter wraps the downstream call in try-with-resources, so the release happens even on exceptions.</p>
+          <p>The distributed version needs a lease with expiry (a sorted set of request IDs scored by deadline), otherwise a crashed server leaks its slots forever.</p>
+        </div>
+      </details>
+
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <span>System Design Visualized — code sketches are illustrative, not production-ready.</span>
+    <a href="../index.html">← All designs</a>
+  </div>
+</footer>
+
+<script src="../assets/engine.js"></script>
+<script src="rate-limiter.config.js"></script>
+<script src="rate-limiter.sim.js"></script>
+<script>SDV.mount(document.getElementById('walkthrough'), window.RATE_LIMITER_CONFIG);</script>
+</body>
+</html>

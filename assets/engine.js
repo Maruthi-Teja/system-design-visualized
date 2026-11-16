@@ -132,7 +132,7 @@
           '<div class="sdv-budget-fill"></div>' +
           '<div class="sdv-budget-ticks">' +
             [0, 25, 50, 75, 100].map(function (p) {
-              return '<span style="left:' + p + '%"><i>' + Math.round((config.budget.total * p) / 100) + '</i></span>';
+              return '<span style="left:' + p + '%"><i>' + +((config.budget.total * p) / 100).toFixed(2) + '</i></span>';
             }).join('') +
           '</div>' +
         '</div>';
@@ -282,7 +282,9 @@
       budgetEl.classList.toggle('is-warn', frac >= 0.7);
       budgetEl.classList.toggle('is-off', !!s.async);
       budgetEl.querySelector('.sdv-budget-track').setAttribute('aria-valuenow', value);
-      const delta = prev && prev.budget != null && !s.async ? value - prev.budget : null;
+      // Rounded so fractional budgets (e.g. 0.3 ms) don't show float noise; only increases are shown.
+      const rawDelta = prev && prev.budget != null && !s.async ? +(value - prev.budget).toFixed(2) : 0;
+      const delta = rawDelta > 0 ? rawDelta : null;
       budgetEl.querySelector('.sdv-budget-readout').innerHTML =
         '<b>' + value + '</b> / ' + total + ' ' + unit;
       budgetEl.querySelector('.sdv-budget-note').innerHTML =

@@ -11,10 +11,14 @@ does, what it stores, and the tradeoff you would be asked to defend.
 | Page | Type | Status |
 | --- | --- | --- |
 | [Ad-Serving / Real-Time Bidding (RTB) System](https://maruthi-teja.github.io/system-design-visualized/designs/rtb.html) | HLD | Live |
-| Rate Limiter | LLD | Coming soon |
+| [Rate Limiter](https://maruthi-teja.github.io/system-design-visualized/designs/rate-limiter.html) | LLD | Live |
 | URL Shortener | HLD | Coming soon |
 | Notification System | HLD | Coming soon |
 | Parking Lot | LLD | Coming soon |
+
+The Rate Limiter page has a live playground comparing token bucket, fixed window and
+sliding window counter, an 11-step class walkthrough (allowed, denied, store down), class
+design, Java and Redis Lua sketches, concurrency notes and ten interviewer follow-ups.
 
 The RTB page covers requirements, back-of-envelope estimation, an 18-step animated
 architecture walkthrough with a latency budget bar, a deep dive (data model, OpenRTB
@@ -46,6 +50,9 @@ any component in the diagram.
 index.html              landing page
 designs/rtb.html        RTB page (content)
 designs/rtb.config.js   RTB diagram: nodes, edges, steps (pure data)
+designs/rate-limiter.html        Rate Limiter page (content)
+designs/rate-limiter.config.js   Rate Limiter diagram (pure data)
+designs/rate-limiter.sim.js      algorithm playground
 assets/style.css        shared styles, dark + light themes
 assets/engine.js        reusable step-through animation engine
 sw.js                   offline cache (network-first)

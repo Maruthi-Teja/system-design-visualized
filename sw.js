@@ -1,10 +1,11 @@
 /* Offline support: network-first, falling back to the cache.
    Fresh content always wins when online; the last-seen copy is used offline. */
-const CACHE = 'sdv-v1';
+const CACHE = 'sdv-v2';
 const PRECACHE = [
   './', 'index.html',
   'assets/style.css', 'assets/engine.js',
   'designs/rtb.html', 'designs/rtb.config.js',
+  'designs/rate-limiter.html', 'designs/rate-limiter.config.js', 'designs/rate-limiter.sim.js',
 ];
 
 self.addEventListener('install', (e) => {

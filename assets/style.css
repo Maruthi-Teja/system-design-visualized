@@ -146,7 +146,7 @@ kbd {
 
 .cards { display: grid; gap: 18px; grid-template-columns: repeat(12, 1fr); margin-top: 28px; }
 .card {
-  grid-column: span 3; position: relative; display: flex; flex-direction: column; gap: 10px;
+  grid-column: span 4; position: relative; display: flex; flex-direction: column; gap: 10px;
   padding: 22px; border-radius: var(--radius); border: 1px solid var(--line);
   background: var(--surface); box-shadow: var(--shadow); color: inherit; text-decoration: none;
 }
@@ -530,3 +530,48 @@ table.modes { border-collapse: collapse; width: 100%; min-width: 640px; font-siz
 @media (max-width: 760px) {
   .sdv-budget-note { order: 3; flex-basis: 100%; }
 }
+
+/* ---------- 8. Interactive simulator (.sim-*) — used by the Rate Limiter page ---------- */
+.sim { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.sim-tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--line); background: var(--surface-2); overflow-x: auto; }
+.sim-tab {
+  font: 600 0.84rem var(--font); color: var(--muted); background: transparent; border: 1px solid transparent;
+  border-radius: 9px; padding: 8px 14px; cursor: pointer; white-space: nowrap; min-height: 38px;
+}
+.sim-tab:hover { color: var(--text); }
+.sim-tab[aria-selected="true"] { color: var(--text); background: var(--surface); border-color: var(--line); }
+.sim-body { padding: 20px; display: grid; gap: 20px; }
+.sim-desc { color: var(--muted); font-size: 0.92rem; max-width: 80ch; }
+.sim-desc b { color: var(--text); }
+.sim-gauge-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.sim-gauge-head span { font: 600 0.7rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.sim-gauge-head b { font: 700 1.15rem var(--mono); font-variant-numeric: tabular-nums; }
+.sim-track { height: 14px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.sim-fill { height: 100%; width: 100%; transform-origin: left center; background: var(--accent); border-radius: 999px; }
+.sim-fill.is-full { background: var(--danger); }
+.sim-strip {
+  position: relative; height: 64px; border-radius: 10px; border: 1px solid var(--line); overflow: hidden;
+  background: linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px) 0 0 / 5% 100%, var(--surface-2);
+}
+.sim-strip-labels { display: flex; justify-content: space-between; font: 0.68rem var(--mono); color: var(--muted); margin-top: 6px; }
+.sim-dot {
+  position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--surface);
+}
+.sim-dot.is-denied { background: var(--danger); border-radius: 3px; }
+.sim-boundary { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--async); opacity: 0.7; }
+.sim-boundary::after { content: "window"; position: absolute; top: 3px; left: 5px; font: 600 0.6rem var(--mono); color: var(--async); }
+.sim-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sim-stats { margin-left: auto; font: 0.82rem var(--mono); color: var(--muted); }
+.sim-stats .ok { color: var(--accent); font-weight: 700; }
+.sim-stats .no { color: var(--danger); font-weight: 700; }
+.sim-try { font-size: 0.88rem; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--money) 35%, var(--line)); background: color-mix(in srgb, var(--money) 7%, transparent); }
+.sim-try strong { color: var(--money); }
+
+/* Comparison table variant: first column isn't forced onto one line on small screens */
+.modes.is-compare td:first-child { white-space: normal; min-width: 150px; }
+.modes .good { color: var(--accent); font-weight: 600; }
+.modes .bad { color: var(--danger); font-weight: 600; }
+.card-art .a-token { fill: var(--money); }
+.card-art .a-bucket { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; }
+@media (prefers-reduced-motion: reduce) { .card-art .a-token-move { display: none; } }
