@@ -575,3 +575,51 @@ table.modes { border-collapse: collapse; width: 100%; min-width: 640px; font-siz
 .card-art .a-token { fill: var(--money); }
 .card-art .a-bucket { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; }
 @media (prefers-reduced-motion: reduce) { .card-art .a-token-move { display: none; } }
+
+/* ---------- 9. Short-code lab (.lab-*) — used by the URL Shortener page ---------- */
+.lab-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.lab-col { padding: 20px; display: grid; gap: 16px; align-content: start; min-width: 0; }
+.lab-col + .lab-col { border-left: 1px solid var(--line); }
+.lab-title { font: 600 0.7rem var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.lab-field { display: grid; gap: 8px; font-size: 0.88rem; }
+.lab-field > span { display: flex; justify-content: space-between; gap: 8px; }
+.lab-field b { font-family: var(--mono); color: var(--accent); }
+.lab-field input[type="range"] { width: 100%; accent-color: var(--accent); }
+.lab-field select, .lab-field input[type="url"] {
+  font: 0.86rem var(--mono); color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-height: 42px; width: 100%; min-width: 0;
+}
+.lab-kv { margin: 0; display: grid; gap: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.lab-kv > div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px; font-size: 0.86rem; }
+.lab-kv > div + div { border-top: 1px dashed var(--line); }
+.lab-kv dt { color: var(--muted); }
+.lab-kv dd { margin: 0; font: 600 0.86rem var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.lab-kv dd.is-bad { color: var(--danger); }
+.lab-codes { display: grid; gap: 8px; }
+.lab-code {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; align-items: baseline;
+  padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line);
+}
+.lab-code > span { font-size: 0.84rem; font-weight: 600; }
+.lab-code > code { font: 700 1.15rem var(--mono); color: var(--accent); letter-spacing: 0.04em; }
+.lab-code small { grid-column: 1 / -1; color: var(--muted); font-size: 0.78rem; }
+.lab-code small code { font-size: 0.72rem; }
+.lab-steps summary { cursor: pointer; font-size: 0.86rem; color: var(--muted); }
+.lab-steps ol { list-style: none; margin: 10px 0 0; padding: 0; font: 0.76rem var(--mono); display: grid; gap: 4px; }
+.lab-steps li { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.3fr) auto; gap: 8px; color: var(--muted); }
+.lab-steps li b { color: var(--money); }
+.lab-steps li > code { color: var(--accent); font-weight: 700; }
+.lab-steps li.lab-read { display: block; margin-top: 4px; color: var(--text); }
+.card-art .a-pill { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+.card-art .a-pill-hot { stroke: var(--accent); }
+.card-art .a-text-l { fill: var(--muted); font: 500 10.5px var(--mono); }
+.card-art .a-text-hot { fill: var(--accent); font: 700 14px var(--mono); }
+@media (max-width: 760px) {
+  .lab-grid { grid-template-columns: minmax(0, 1fr); }
+  .lab-col + .lab-col { border-left: 0; border-top: 1px solid var(--line); }
+  .lab-col { padding: 16px; }
+  .lab-kv > div { flex-direction: column; gap: 2px; }
+  .lab-kv dd { text-align: left; }
+  .lab-steps li { grid-template-columns: minmax(0, 1fr) auto; }
+  .lab-steps li > span:first-child { grid-column: 1 / -1; }
+}

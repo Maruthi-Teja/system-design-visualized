@@ -12,9 +12,18 @@ does, what it stores, and the tradeoff you would be asked to defend.
 | --- | --- | --- |
 | [Ad-Serving / Real-Time Bidding (RTB) System](https://maruthi-teja.github.io/system-design-visualized/designs/rtb.html) | HLD | Live |
 | [Rate Limiter](https://maruthi-teja.github.io/system-design-visualized/designs/rate-limiter.html) | LLD | Live |
-| URL Shortener | HLD | Coming soon |
+| [URL Shortener](https://maruthi-teja.github.io/system-design-visualized/designs/url-shortener.html) | HLD | Live |
 | Notification System | HLD | Coming soon |
 | Parking Lot | LLD | Coming soon |
+| Chat / Messaging System | HLD | Coming soon |
+| News Feed | HLD | Coming soon |
+| Distributed Cache | HLD | Coming soon |
+| LRU Cache | LLD | Coming soon |
+
+The URL Shortener page has estimation, a short-code lab (code length vs capacity and
+collision odds; counter, scrambled-counter and hash codes for any URL), a 13-step walkthrough
+of the write path, redirect path, a viral hot-key failure and async analytics/expiry, plus
+data model, API, scaling, failure modes and ten interviewer follow-ups.
 
 The Rate Limiter page has a live playground comparing token bucket, fixed window and
 sliding window counter, an 11-step class walkthrough (allowed, denied, store down), class
@@ -53,6 +62,9 @@ designs/rtb.config.js   RTB diagram: nodes, edges, steps (pure data)
 designs/rate-limiter.html        Rate Limiter page (content)
 designs/rate-limiter.config.js   Rate Limiter diagram (pure data)
 designs/rate-limiter.sim.js      algorithm playground
+designs/url-shortener.html       URL Shortener page (content)
+designs/url-shortener.config.js  URL Shortener diagram (pure data)
+designs/url-shortener.lab.js     short-code lab
 assets/style.css        shared styles, dark + light themes
 assets/engine.js        reusable step-through animation engine
 sw.js                   offline cache (network-first)

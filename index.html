@@ -101,15 +101,32 @@
           </svg>
         </div>
       </a>
+      <a class="card card-live" href="designs/url-shortener.html">
+        <div class="card-body">
+          <span class="card-tag">HLD · key lab + 13 steps</span>
+          <h3>URL Shortener</h3>
+          <p>Seven characters for every link, 100 reads for every write. Play with code length and generation strategies, then follow a link from creation to redirect — including the day one link goes viral.</p>
+          <ul class="chips" style="margin-top:4px">
+            <li class="chip">base62</li><li class="chip">ID range leasing</li><li class="chip">cache-aside</li><li class="chip">hot keys</li>
+          </ul>
+          <span class="card-cta">Start the walkthrough <span aria-hidden="true">→</span></span>
+        </div>
+        <!-- Decorative: a long URL collapses into a short code. -->
+        <div class="card-art" aria-hidden="true">
+          <svg viewBox="0 0 420 200">
+            <rect class="a-pill" x="20" y="40" width="380" height="34" rx="17"/>
+            <text class="a-text-l" x="38" y="61">https://example.com/blog/2026/11/how-we-scaled…?utm=…</text>
+            <path id="art-short" class="a-line" d="M210,78 V122"/>
+            <circle class="a-dot" r="5"><animateMotion dur="1.6s" repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;0.6;1" calcMode="linear"><mpath href="#art-short"/></animateMotion></circle>
+            <rect class="a-pill a-pill-hot" x="120" y="126" width="180" height="40" rx="20"/>
+            <text class="a-text-hot" x="210" y="151" text-anchor="middle">sho.rt/2crtgcW</text>
+          </svg>
+        </div>
+      </a>
     </div>
 
     <h2 class="section-label">Coming soon</h2>
     <div class="cards">
-      <div class="card card-soon">
-        <span class="card-tag">HLD</span>
-        <h3>URL Shortener</h3>
-        <p>Key generation, redirects at read-heavy scale, caching and analytics.</p>
-      </div>
       <div class="card card-soon">
         <span class="card-tag">HLD</span>
         <h3>Notification System</h3>
@@ -119,6 +136,26 @@
         <span class="card-tag">LLD</span>
         <h3>Parking Lot</h3>
         <p>Entities, slot allocation strategies, pricing and the state machine behind a ticket.</p>
+      </div>
+      <div class="card card-soon">
+        <span class="card-tag">HLD</span>
+        <h3>Chat / Messaging System</h3>
+        <p>One-to-one and group delivery over WebSockets, ordering, read receipts and offline sync.</p>
+      </div>
+      <div class="card card-soon">
+        <span class="card-tag">HLD</span>
+        <h3>News Feed</h3>
+        <p>Fan-out on write vs on read, the celebrity problem, ranking and feed caching.</p>
+      </div>
+      <div class="card card-soon">
+        <span class="card-tag">HLD</span>
+        <h3>Distributed Cache</h3>
+        <p>Consistent hashing, replication, eviction, and what happens when a node leaves the ring.</p>
+      </div>
+      <div class="card card-soon">
+        <span class="card-tag">LLD</span>
+        <h3>LRU Cache</h3>
+        <p>Hash map plus doubly linked list, O(1) everything, then make it thread-safe.</p>
       </div>
     </div>
   </section>

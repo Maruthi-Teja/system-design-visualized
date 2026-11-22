@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design a URL Shortener · System Design Visualized</title>
+  <meta name="description" content="Interactive URL shortener system design: estimation, a short-code lab comparing counter, scrambled and hash-based codes, an animated write and redirect path, data model, API and interview follow-ups.">
+  <meta name="theme-color" content="#0a0e14">
+  <!-- Set the theme before first paint to avoid a flash. -->
+  <script>(function(){var t;try{t=localStorage.getItem('sdv-theme')}catch(e){}if(!t)t=window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t})()</script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0e14'/%3E%3Cpath d='M8 10h6v5H8zM18 17h6v5h-6z' fill='none' stroke='%235eead4' stroke-width='2'/%3E%3Cpath d='M14 12.5h4v7' fill='none' stroke='%23fbbf24' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="../index.html">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--surface-2)"/><path d="M8 10h6v5H8zM18 17h6v5h-6z" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M14 12.5h4v7" fill="none" stroke="var(--money)" stroke-width="2"/></svg>
+      <span>System Design <small>Visualized</small></span>
+    </a>
+    <nav class="topnav" aria-label="On this page">
+      <a href="#requirements">Requirements</a>
+      <a href="#estimation">Estimation</a>
+      <a href="#keys">Key lab</a>
+      <a href="#walkthrough-section">Walkthrough</a>
+      <a href="#deep-dive">Deep dive</a>
+      <a href="#interview">Interviewer asks</a>
+    </nav>
+    <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle dark / light mode">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <div class="wrap page-hero">
+    <p class="crumb"><a href="../index.html">All designs</a> / HLD</p>
+    <h1>Design a URL Shortener</h1>
+    <p class="lede">Turn a long URL into seven characters, then redirect hundreds of thousands of clicks a second. The interesting parts are generating codes that never collide and keeping a 100:1 read-heavy path fast when one link goes viral.</p>
+    <ul class="chips">
+      <li class="chip"><b>100:1</b> read : write</li>
+      <li class="chip"><b>~350K</b> redirects/s peak</li>
+      <li class="chip">base62 · 7 chars</li>
+      <li class="chip">cache-aside</li>
+      <li class="chip">301 vs 302</li>
+    </ul>
+  </div>
+
+  <!-- ============================ 1. Requirements ============================ -->
+  <section class="wrap section" id="requirements">
+    <div class="section-head"><span class="num">01</span><h2>Requirements</h2></div>
+    <p class="section-intro">A classic warm-up question that turns hard on follow-ups. Get the read/write asymmetry and the redirect semantics on the table early — the rest of the design follows from them.</p>
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">Functional</span></h3>
+        <ul class="checklist">
+          <li><b>Shorten</b> <span>— long URL in, short unique URL out.</span></li>
+          <li><b>Redirect</b> <span>— short URL sends the browser to the original.</span></li>
+          <li><b>Custom alias</b> <span>— <code>sho.rt/launch-2026</code>, if available.</span></li>
+          <li><b>Expiry</b> <span>— optional; expired links stop working.</span></li>
+          <li><b>Click analytics</b> <span>— counts by day, country, referrer.</span></li>
+          <li><b>Manage</b> <span>— list, disable and delete my links.</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Non-functional</span></h3>
+        <ul class="checklist">
+          <li><b>Fast redirects</b> <span>— p99 &lt; 50 ms server-side; this is the product.</span></li>
+          <li><b>Highly available reads</b> <span>— a dead short link breaks every page it is printed on.</span></li>
+          <li><b>Unique codes</b> <span>— never two URLs behind one code.</span></li>
+          <li><b>Durable</b> <span>— links live for years.</span></li>
+          <li><b>Not guessable</b> <span>— codes should not be enumerable.</span></li>
+          <li><b>Analytics may lag</b> <span>— eventually consistent, seconds to minutes.</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Out of scope</span></h3>
+        <ul class="checklist is-out">
+          <li>Link-in-bio pages and QR code design</li>
+          <li>Billing and plan management</li>
+          <li>Editing the destination of an existing link</li>
+          <li>Full malware-scanning pipeline internals</li>
+          <li>User accounts and authentication</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 2. Estimation ============================= -->
+  <section class="wrap section" id="estimation">
+    <div class="section-head"><span class="num">02</span><h2>Back-of-envelope estimation</h2></div>
+    <p class="section-intro">Assume <b>100M new links per day</b> and <b>100 redirects per link created</b>. Storage is large but boring; read QPS and skew are what shape the design.</p>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-label">Creates</div><div class="stat-value">1.2K<small>/ s</small></div><div class="stat-note">100M / day · ~3.5K/s peak</div></div>
+      <div class="stat"><div class="stat-label">Redirects</div><div class="stat-value">116K<small>/ s</small></div><div class="stat-note">10B / day · ~350K/s peak</div></div>
+      <div class="stat"><div class="stat-label">Storage, 5 years</div><div class="stat-value">91<small>TB</small></div><div class="stat-note">182B links × 500 B, before replication</div></div>
+      <div class="stat"><div class="stat-label">Keyspace used</div><div class="stat-value">5.2<small>%</small></div><div class="stat-note">182B of 62⁷ = 3.5 trillion codes</div></div>
+    </div>
+
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">QPS</span> Traffic</h3>
+        <ul class="math">
+          <li><span>Creates / second</span><span class="res">≈ 1,160</span><span class="calc">100M ÷ 86,400 s; peak ×3 ≈ 3.5K</span></li>
+          <li><span>Redirects / day</span><span class="res">≈ 10B</span><span class="calc">100M × 100 read : write</span></li>
+          <li><span>Redirects / second</span><span class="res">≈ 116K</span><span class="calc">10B ÷ 86,400; peak ×3 ≈ 350K</span></li>
+          <li><span>Cache-miss DB reads</span><span class="res">≈ 6K / s</span><span class="calc">116K × 5% miss rate</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Storage</span> &amp; memory</h3>
+        <ul class="math">
+          <li><span>Per link</span><span class="res">≈ 500 B</span><span class="calc">code 7 B + URL ~100–2,000 B + metadata ~100 B</span></li>
+          <li><span>New data / day</span><span class="res">≈ 50 GB</span><span class="calc">100M × 500 B</span></li>
+          <li><span>5 years</span><span class="res">≈ 91 TB</span><span class="calc">50 GB × 1,825 days; ×3 replicas ≈ 275 TB</span></li>
+          <li><span>Hot-set cache</span><span class="res">≈ 25 GB</span><span class="calc">~50M hot links × 500 B — a small Redis cluster</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Keys</span> &amp; events</h3>
+        <ul class="math">
+          <li><span>Keyspace, 7 chars</span><span class="res">3.5 × 10¹²</span><span class="calc">62⁷ = 3,521,614,606,208</span></li>
+          <li><span>Years to exhaust</span><span class="res">≈ 96</span><span class="calc">3.5T ÷ (100M × 365)</span></li>
+          <li><span>Redirect bandwidth</span><span class="res">≈ 0.5 Gbps</span><span class="calc">116K × ~500 B of headers</span></li>
+          <li><span>Click events / day</span><span class="res">≈ 1 TB</span><span class="calc">10B × ~100 B, before compression</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== 3. Key lab ============================== -->
+  <section class="wrap section" id="keys">
+    <div class="section-head"><span class="num">03</span><h2>Short-code lab</h2></div>
+    <p class="section-intro">How long should the code be, and where does it come from? Change the length and the creation rate, then shorten a URL with three different strategies.</p>
+
+    <div class="sim" id="lab">
+      <div class="lab-grid">
+        <div class="lab-col">
+          <h3 class="lab-title">Capacity</h3>
+          <label class="lab-field">
+            <span>Code length <b data-out="len"></b></span>
+            <input type="range" min="5" max="9" step="1" value="7" data-lab="len">
+          </label>
+          <label class="lab-field">
+            <span>New links per day</span>
+            <select data-lab="rate">
+              <option value="1000000">1 million</option>
+              <option value="10000000">10 million</option>
+              <option value="100000000" selected>100 million</option>
+              <option value="1000000000">1 billion</option>
+            </select>
+          </label>
+          <dl class="lab-kv">
+            <div><dt>Possible codes (62<sup>n</sup>)</dt><dd data-out="space"></dd></div>
+            <div><dt>Counter runs out in</dt><dd data-out="years"></dd></div>
+            <div><dt>Keyspace used after 5 years</dt><dd data-out="used"></dd></div>
+            <div><dt>Chance a new random code collides, year 5</dt><dd data-out="pnext"></dd></div>
+            <div><dt>Colliding pairs if codes were random</dt><dd data-out="pairs"></dd></div>
+          </dl>
+          <p class="sim-try" data-out="verdict"></p>
+        </div>
+
+        <div class="lab-col">
+          <h3 class="lab-title">Encoder</h3>
+          <label class="lab-field">
+            <span>Long URL</span>
+            <input type="url" data-lab="url" value="https://example.com/blog/2026/11/how-we-scaled-our-checkout?utm_source=newsletter" spellcheck="false">
+          </label>
+          <div class="sim-actions">
+            <button class="sdv-btn sdv-btn-primary" type="button" data-lab="shorten">Shorten again</button>
+            <span class="sim-stats">next ID <b data-out="id"></b></span>
+          </div>
+          <div class="lab-codes">
+            <div class="lab-code"><span>Counter → base62</span><code data-out="seq"></code><small>Never collides. Consecutive and guessable.</small></div>
+            <div class="lab-code"><span>Scrambled counter</span><code data-out="scr"></code><small>ID × odd constant mod 62<sup>n</sup>: still unique, no longer sequential.</small></div>
+            <div class="lab-code"><span>Hash → truncate</span><code data-out="hash"></code><small>Same URL, same code every time. Can collide — <code data-out="hashhex"></code></small></div>
+          </div>
+          <details class="lab-steps">
+            <summary>How base62 encoding works for this ID</summary>
+            <ol data-out="steps"></ol>
+          </details>
+        </div>
+      </div>
+    </div>
+    <noscript><p class="block">The lab needs JavaScript. The comparison table below works without it.</p></noscript>
+
+    <h3 class="subhead">Code generation strategies</h3>
+    <div class="table-scroll">
+      <table class="modes is-compare">
+        <thead><tr><th>Strategy</th><th>How</th><th>Collisions</th><th>Coordination</th><th>Watch out for</th></tr></thead>
+        <tbody>
+          <tr><td>Hash + truncate</td><td>MD5 / SHA-256 of the URL, base62, keep 7 chars.</td><td><span class="bad">Yes</span> — check and retry with a salt</td><td>None</td><td>Read-before-write on every insert; rate of retries grows as the table fills.</td></tr>
+          <tr><td>Random code</td><td>7 random base62 characters.</td><td><span class="bad">Yes</span> — same as hashing</td><td>None</td><td>Same retry problem; needs a good random source.</td></tr>
+          <tr><td>Counter + base62</td><td>Global sequence, leased in blocks to each server.</td><td><span class="good">Never</span></td><td>Coordinator, off the hot path</td><td>Sequential codes are enumerable — scramble the ID first.</td></tr>
+          <tr><td>Pre-generated key pool</td><td>A key service fills a table of unused random codes; servers take batches.</td><td><span class="good">Never</span> (checked once, offline)</td><td>Key service + its DB</td><td>Another service to run; batches held by a crashed server are lost (harmless).</td></tr>
+          <tr><td>Snowflake-style ID</td><td>Timestamp + machine ID + sequence, then base62.</td><td><span class="good">Never</span></td><td>Unique machine IDs only</td><td>64-bit IDs encode to ~11 chars — longer than needed.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================= 4. Walkthrough ============================= -->
+  <section class="wrap section" id="walkthrough-section">
+    <div class="section-head"><span class="num">04</span><h2>Architecture walkthrough</h2></div>
+    <p class="section-intro">Create a link, click it, survive a viral spike, then the background work. The bar resets at step 6 because a redirect is a new request with its own budget. Click any component to jump to it.</p>
+    <div id="walkthrough"></div>
+    <noscript><p class="block">The interactive walkthrough needs JavaScript.</p></noscript>
+  </section>
+
+  <!-- ============================== 5. Deep dive ============================== -->
+  <section class="wrap section" id="deep-dive">
+    <div class="section-head"><span class="num">05</span><h2>Deep dive</h2></div>
+
+    <h3 class="subhead">Data model</h3>
+    <p class="section-intro">One huge table with a single access pattern — look up by code — plus small supporting data. Partition by <code>code</code> and every redirect touches exactly one partition.</p>
+    <div class="entities">
+      <div class="entity">
+        <header>url_mapping <span>KV / wide-column</span></header>
+        <ul>
+          <li class="pk"><b>code</b><i>PK · partition key</i></li>
+          <li><b>long_url</b><i>text ≤ 2 KB</i></li>
+          <li class="fk"><b>user_id</b><i>nullable</i></li>
+          <li><b>created_at</b><i>timestamp</i></li>
+          <li><b>expires_at</b><i>timestamp, nullable</i></li>
+          <li><b>status</b><i>active | disabled</i></li>
+        </ul>
+        <footer>Hundreds of billions of rows, read by primary key only. Never updated except to disable.</footer>
+      </div>
+      <div class="entity">
+        <header>user_links <span>index table</span></header>
+        <ul>
+          <li class="pk"><b>user_id</b><i>partition key</i></li>
+          <li class="pk"><b>created_at</b><i>clustering key, desc</i></li>
+          <li class="fk"><b>code</b><i>→ url_mapping</i></li>
+        </ul>
+        <footer>Answers “my links, newest first”. Written asynchronously after the main insert.</footer>
+      </div>
+      <div class="entity">
+        <header>id_block <span>coordinator</span></header>
+        <ul>
+          <li class="pk"><b>name</b><i>“url_ids”</i></li>
+          <li><b>next_block_start</b><i>bigint, CAS-updated</i></li>
+          <li><b>block_size</b><i>e.g. 1,000,000</i></li>
+        </ul>
+        <footer>One row. Touched once per million links per server — about once every 15 minutes each.</footer>
+      </div>
+      <div class="entity">
+        <header>click_event <span>Kafka → object storage</span></header>
+        <ul>
+          <li class="pk"><b>event_id</b><i>UUID · dedup key</i></li>
+          <li class="fk"><b>code</b><i></i></li>
+          <li><b>ts</b><i>timestamp</i></li>
+          <li><b>country, referrer</b><i>dimensions</i></li>
+          <li><b>user_agent</b><i>for bot filtering</i></li>
+          <li><b>ip_hash</b><i>salted — never the raw IP</i></li>
+        </ul>
+        <footer>Append-only. Billions per day, kept raw in cheap storage for re-processing.</footer>
+      </div>
+      <div class="entity">
+        <header>click_rollup <span>OLAP</span></header>
+        <ul>
+          <li class="pk"><b>code, minute</b><i>key</i></li>
+          <li><b>country, referrer</b><i>dimensions</i></li>
+          <li><b>clicks</b><i>count</i></li>
+          <li><b>uniques</b><i>HyperLogLog sketch</i></li>
+        </ul>
+        <footer>What the stats API reads. Merged to hourly / daily rows as data ages.</footer>
+      </div>
+      <div class="entity">
+        <header>cache entry <span>Redis</span></header>
+        <ul>
+          <li class="pk"><b>u:{code}</b><i>key</i></li>
+          <li><b>long_url</b><i>string</i></li>
+          <li><b>expires_at, status</b><i>checked on every hit</i></li>
+          <li><b>TTL</b><i>min(1 day, until expiry)</i></li>
+        </ul>
+        <footer>LRU-evicted. Unknown codes cached as <code>NOT_FOUND</code> for ~60 s.</footer>
+      </div>
+    </div>
+
+    <h3 class="subhead">API sketch</h3>
+    <div class="grid-2">
+      <div class="code">
+        <div class="code-head"><span class="verb">POST</span><b>/api/v1/urls</b><span>create</span></div>
+<pre><code class="json">// Request
+{
+  "long_url": "https://example.com/blog/2026/11/how-we-scaled-our-checkout",
+  "alias": "checkout-story",     // optional custom code
+  "expires_at": "2027-11-01T00:00:00Z"
+}
+
+// 201 Created
+{
+  "code": "checkout-story",
+  "short_url": "https://sho.rt/checkout-story",
+  "long_url": "https://example.com/blog/2026/11/how-we-scaled-our-checkout",
+  "expires_at": "2027-11-01T00:00:00Z",
+  "created_at": "2026-11-22T09:14:03Z"
+}
+
+// 409 Conflict — alias already taken
+{ "error": "alias_taken", "alias": "checkout-story" }</code></pre>
+        <div class="code-note">Accept an <code>Idempotency-Key</code> header so a client retrying after a timeout doesn’t create two links.</div>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="verb">GET</span><b>/{code}</b><span>redirect</span></div>
+<pre><code class="json">// GET https://sho.rt/2crtgcW
+
+// 302 Found
+// Location: https://example.com/blog/2026/11/how-we-scaled-our-checkout
+// Cache-Control: private, max-age=90
+// (no body)
+
+// 404 Not Found   — unknown code
+// 410 Gone        — expired or disabled
+
+
+// GET /api/v1/urls/2crtgcW/stats?from=2026-11-01&amp;to=2026-11-21&amp;by=day
+{
+  "code": "2crtgcW",
+  "total_clicks": 48211,
+  "unique_visitors": 39870,      // HyperLogLog estimate, ±1%
+  "series": [
+    { "date": "2026-11-20", "clicks": 2105 },
+    { "date": "2026-11-21", "clicks": 3388 }
+  ],
+  "top_countries": [{ "country": "IN", "clicks": 20412 }]
+}</code></pre>
+        <div class="code-note">The redirect is on the bare domain so short URLs stay short; the management API lives under <code>/api/v1</code> with authentication.</div>
+      </div>
+    </div>
+
+    <h3 class="subhead">Scaling</h3>
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">Reads</span> Layers of cache</h3>
+        <p>Browser (for 301s) → CDN edge → in-process LRU for the hottest codes → Redis → database. Each layer only sees what the one before it missed. Redirect servers are stateless and scale horizontally behind a load balancer.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Writes</span> No hot spots</h3>
+        <p>Writes are only ~1K/s, so the store is sized for data volume, not write throughput. Partitioning by a hash of <code>code</code> spreads new links evenly — which is another reason to scramble IDs: sequential keys on a range-partitioned store would all land on the last partition.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Regions</span> Read local, write anywhere</h3>
+        <p>Replicate the URL store to every region so redirects are always local. Give each region its own ID blocks (or a region digit in the ID) so creates never need cross-region coordination. A link created in one region is readable elsewhere after replication lag — retry at a stronger consistency on a miss.</p>
+      </div>
+    </div>
+
+    <h3 class="subhead">Failure modes</h3>
+    <div class="table-scroll">
+      <table class="modes">
+        <thead><tr><th>What breaks</th><th>Effect</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>Redis shard down</td><td>Misses for that shard’s codes flood the database.</td><td>Request coalescing, in-process hot cache, replicas per shard; DB capacity sized for a cache-shard loss, not zero misses.</td></tr>
+          <tr><td>Viral link (hot key)</td><td>One code at 100K+ req/s on one cache shard.</td><td>Hot-key detection, local caching in every redirect instance, edge caching with a short TTL.</td></tr>
+          <tr><td>Coordinator down</td><td>No new ID blocks can be leased.</td><td>Servers keep allocating from the block they hold; prefetch the next block early. A 1M block lasts each server ~15 minutes at peak.</td></tr>
+          <tr><td>Write server crashes</td><td>The rest of its ID block is never used.</td><td>Harmless — gaps in the sequence don’t matter with trillions of codes.</td></tr>
+          <tr><td>Kafka unavailable</td><td>Click events can’t be published.</td><td>Bounded local buffer, then drop and count. Redirects carry on unaffected.</td></tr>
+          <tr><td>Phishing link reported</td><td>Malicious redirect served from caches.</td><td>Disable in the DB, publish an invalidation event that evicts Redis, local and edge entries; return 410 or a warning page.</td></tr>
+          <tr><td>Region outage</td><td>Users routed there can’t resolve links.</td><td>Health-checked DNS / anycast fails over to the next region, which already holds a full replica.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- =========================== 6. Interviewer asks =========================== -->
+  <section class="wrap-narrow section" id="interview">
+    <div class="section-head"><span class="num">06</span><h2>Interviewer asks…</h2></div>
+    <p class="section-intro">Likely follow-ups. Try answering out loud before you expand each one.</p>
+    <div class="qa">
+
+      <details>
+        <summary><span class="q-num">Q1</span>Why not just hash the long URL and take the first 7 characters?</summary>
+        <div class="answer">
+          <p class="tag-line">CODE GENERATION</p>
+          <p>Truncating a hash throws away most of its bits, so different URLs <b>will</b> collide. At 182B links in a 3.5T space, roughly 1 in 20 new codes would hit an existing one by year five. Every insert then needs a read to check, plus a retry with a salt on conflict — and two concurrent inserts can still race unless the write is conditional.</p>
+          <p>The one real benefit — the same URL always gets the same code — is something you usually don’t want anyway (see Q5). A counter with base62 encoding never collides, so the insert is a blind write.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q2</span>How do many write servers generate unique IDs without talking to each other on every request?</summary>
+        <div class="answer">
+          <p class="tag-line">DISTRIBUTED IDS</p>
+          <p><b>Range leasing.</b> A coordinator (etcd, ZooKeeper, or a single DB row updated with compare-and-set) hands out blocks: server A gets 1,000,000–1,999,999, server B gets 2,000,000–2,999,999. Each server increments locally with an atomic counter.</p>
+          <ul>
+            <li>The coordinator is touched once per block, not per link — and prefetching the next block keeps it off the request path entirely.</li>
+            <li>If a server dies mid-block, the unused IDs are simply skipped. Gaps cost nothing.</li>
+            <li>Alternative with no coordinator: Snowflake-style IDs (time + machine + sequence), at the cost of longer codes.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q3</span>301 or 302?</summary>
+        <div class="answer">
+          <p class="tag-line">REDIRECT SEMANTICS</p>
+          <p><b>301 Moved Permanently</b> is cacheable by default — the browser may never ask you again. That saves load, but you lose those clicks from analytics and can’t disable the link for anyone who already followed it.</p>
+          <p><b>302 Found</b> (or 307) is temporary — every click reaches you, so analytics are complete and you keep control, at the cost of more traffic.</p>
+          <p>A product whose value is analytics and link management uses 302 with a short <code>Cache-Control</code> max-age. A pure “make it short” service with no analytics could use 301. Either way, say <i>why</i> — that’s the point of the question.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q4</span>One link gets 1 million clicks per second. What breaks and how do you fix it?</summary>
+        <div class="answer">
+          <p class="tag-line">HOT KEYS</p>
+          <p>The cache shard holding that code is the bottleneck — sharding spreads <i>different</i> keys, not one key. If that shard fails, every instance misses together and the database gets the whole load (thundering herd).</p>
+          <ul>
+            <li><b>Edge / CDN caching</b> with a short TTL absorbs most of it before it reaches you.</li>
+            <li><b>In-process cache</b> in each redirect instance for detected hot codes — the load is now spread across all instances.</li>
+            <li><b>Request coalescing</b>: on a miss, one DB read per key per instance; everyone else waits for that result.</li>
+            <li>Replicate the hot key across several cache shards (<code>u:{code}#0..7</code>) and read a random copy.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q5</span>Two users shorten the same URL. Should they get the same code?</summary>
+        <div class="answer">
+          <p class="tag-line">DEDUPLICATION</p>
+          <p>Usually <b>no</b>. Sharing a code means sharing click analytics, one user can’t delete or expire it without affecting the other, and the system needs a second index (<code>long_url → code</code>) that is as large as the main table.</p>
+          <p>Reasonable compromise: dedupe only within the same user account and the same settings (expiry, alias), using a hash of the normalised URL as the lookup key. Across users, storage is cheap — 500 bytes per link — so duplicates cost almost nothing.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q6</span>How do custom aliases work without a race between two people picking the same one?</summary>
+        <div class="answer">
+          <p class="tag-line">CUSTOM ALIASES</p>
+          <p>Treat the alias as the primary key and insert with a <b>conditional write</b> — <code>INSERT … IF NOT EXISTS</code> (Cassandra LWT, DynamoDB condition expression, or a unique constraint in SQL). Exactly one insert wins; the other gets <code>409 Conflict</code>. No separate “check, then write”.</p>
+          <ul>
+            <li>Aliases share the namespace with generated codes, so keep them distinguishable — e.g. require a hyphen or a minimum length that generated codes never use, or reserve a character.</li>
+            <li>Block reserved words (<code>api</code>, <code>login</code>, <code>admin</code>) and offensive terms.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q7</span>How do you stop people abusing the service for spam and phishing?</summary>
+        <div class="answer">
+          <p class="tag-line">ABUSE</p>
+          <ul>
+            <li><b>At creation</b>: rate limits per user and IP, an in-memory domain blocklist, and stricter rules for anonymous users.</li>
+            <li><b>After creation</b>: asynchronous scanning with reputation services; a flagged link is disabled and its caches invalidated.</li>
+            <li><b>At redirect</b>: show an interstitial warning page for suspicious destinations instead of redirecting straight through.</li>
+            <li><b>Unguessable codes</b>, so attackers can’t enumerate private links, plus abuse reporting with fast takedown.</li>
+          </ul>
+          <p>The redirect domain’s reputation is the business: if browsers and email providers start flagging it, every customer’s links break.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q8</span>How do you count clicks accurately at 116K per second?</summary>
+        <div class="answer">
+          <p class="tag-line">ANALYTICS</p>
+          <p>Never increment a counter in the URL row per click — that turns the read path into a write path and creates hot rows for popular links. Instead:</p>
+          <ul>
+            <li>Emit an event per click to Kafka, asynchronously, keyed by <code>event_id</code> so a viral link doesn’t create a hot partition.</li>
+            <li>A stream job dedupes by <code>event_id</code>, filters bots, and writes per-minute rollups to an OLAP store.</li>
+            <li>Unique visitors via HyperLogLog sketches: ~1% error in a few KB per link per day.</li>
+          </ul>
+          <p>Be upfront about the gaps: edge-cached redirects and dropped events under overload mean the count is “very close”, not exact. If exact counts matter, ship CDN logs into the same pipeline.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q9</span>What happens when a link expires? Do you reuse the code?</summary>
+        <div class="answer">
+          <p class="tag-line">EXPIRY</p>
+          <p>Enforce expiry <b>at read time</b> — the redirect checks <code>expires_at</code> and returns <code>410 Gone</code> — so it’s exact to the second regardless of cleanup. Separately, a background sweeper or the database’s native TTL deletes expired rows to reclaim space.</p>
+          <p>Don’t reuse codes. A printed flyer or an old bookmark would silently start pointing at someone else’s URL — a security problem, not just a bug. With 3.5 trillion 7-character codes there is no shortage to justify the risk.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q10</span>SQL or NoSQL for the URL store?</summary>
+        <div class="answer">
+          <p class="tag-line">STORAGE CHOICE</p>
+          <p>The workload is a single huge table, lookup by primary key, almost no updates, no joins, ~6K reads/s after the cache and ~1K writes/s — and ~90 TB over five years. That points to a horizontally partitioned key-value or wide-column store (Cassandra, DynamoDB, or similar): linear scaling, multi-region replication built in.</p>
+          <p>Sharded MySQL / Postgres is a perfectly good answer too — you get unique constraints and transactions for aliases — but you own resharding as data grows. Either way, the deciding factors to state are: access pattern, data volume, and how much operational work you’re willing to take on.</p>
+        </div>
+      </details>
+
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <span>System Design Visualized — numbers are illustrative assumptions, not measurements.</span>
+    <a href="../index.html">← All designs</a>
+  </div>
+</footer>
+
+<script src="../assets/engine.js"></script>
+<script src="url-shortener.config.js"></script>
+<script src="url-shortener.lab.js"></script>
+<script>SDV.mount(document.getElementById('walkthrough'), window.URL_SHORTENER_CONFIG);</script>
+</body>
+</html>
