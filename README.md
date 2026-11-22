@@ -13,12 +13,18 @@ does, what it stores, and the tradeoff you would be asked to defend.
 | [Ad-Serving / Real-Time Bidding (RTB) System](https://maruthi-teja.github.io/system-design-visualized/designs/rtb.html) | HLD | Live |
 | [Rate Limiter](https://maruthi-teja.github.io/system-design-visualized/designs/rate-limiter.html) | LLD | Live |
 | [URL Shortener](https://maruthi-teja.github.io/system-design-visualized/designs/url-shortener.html) | HLD | Live |
-| Notification System | HLD | Coming soon |
+| [Notification System](https://maruthi-teja.github.io/system-design-visualized/designs/notification-system.html) | HLD | Live |
 | Parking Lot | LLD | Coming soon |
 | Chat / Messaging System | HLD | Coming soon |
 | News Feed | HLD | Coming soon |
 | Distributed Cache | HLD | Coming soon |
 | LRU Cache | LLD | Coming soon |
+
+The Notification System page has estimation, a retry lab (1,000 messages hit a provider
+outage; compare immediate, fixed, exponential and jittered retries), a 13-step walkthrough
+(transactional push, a 20M-user campaign with priority isolation, an SMS provider failure
+with retries and DLQ, delivery tracking), data model, API, channel comparison, scaling,
+failure modes and ten interviewer follow-ups.
 
 The URL Shortener page has estimation, a short-code lab (code length vs capacity and
 collision odds; counter, scrambled-counter and hash codes for any URL), a 13-step walkthrough
@@ -65,6 +71,9 @@ designs/rate-limiter.sim.js      algorithm playground
 designs/url-shortener.html       URL Shortener page (content)
 designs/url-shortener.config.js  URL Shortener diagram (pure data)
 designs/url-shortener.lab.js     short-code lab
+designs/notification-system.html       Notification System page (content)
+designs/notification-system.config.js  Notification System diagram (pure data)
+designs/notification-system.lab.js     retry lab
 assets/style.css        shared styles, dark + light themes
 assets/engine.js        reusable step-through animation engine
 sw.js                   offline cache (network-first)

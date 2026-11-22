@@ -623,3 +623,44 @@ table.modes { border-collapse: collapse; width: 100%; min-width: 640px; font-siz
   .lab-steps li { grid-template-columns: minmax(0, 1fr) auto; }
   .lab-steps li > span:first-child { grid-column: 1 / -1; }
 }
+
+/* ---------- 10. Retry lab (.rl-*) — used by the Notification System page ---------- */
+.rl-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
+.rl-plot {
+  position: relative; height: 220px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  background: linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px) 0 0 / 25% 100%, var(--surface-2);
+}
+.rl-chart { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.rl-outage { fill: color-mix(in srgb, var(--danger) 10%, transparent); }
+.rl-ok { fill: var(--accent); }
+.rl-no { fill: var(--danger); opacity: 0.75; }
+.rl-clip { fill: var(--money); }
+.rl-cap { stroke: var(--money); stroke-width: 2; stroke-dasharray: 6 5; vector-effect: non-scaling-stroke; }
+.rl-outage-label {
+  position: absolute; top: 0; left: 0; padding: 6px 8px; font: 600 0.66rem var(--mono); color: var(--danger);
+  white-space: nowrap; overflow: visible; z-index: 1; pointer-events: none;
+  border-right: 2px dashed color-mix(in srgb, var(--danger) 60%, transparent); height: 100%;
+}
+.rl-cap-label {
+  position: absolute; right: 8px; transform: translateY(-4px); font: 600 0.66rem var(--mono); color: var(--money);
+  z-index: 1; pointer-events: none; background: color-mix(in srgb, var(--surface-2) 85%, transparent); padding: 0 4px; border-radius: 4px;
+}
+.rl-ymax { position: absolute; right: 8px; top: 6px; font: 0.64rem var(--mono); color: var(--muted); z-index: 1; }
+.rl-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.8rem; color: var(--muted); }
+.rl-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.rl-legend .is-ok { background: var(--accent); }
+.rl-legend .is-no { background: var(--danger); opacity: 0.75; }
+.rl-legend .is-cap { height: 0; border-top: 2px dashed var(--money); border-radius: 0; vertical-align: 3px; }
+.rl-kv { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.rl-kv > div { flex-direction: column; gap: 2px; }
+.rl-kv > div + div { border-top: 0; border-left: 1px dashed var(--line); }
+.rl-kv dd { text-align: left; font-size: 1rem; }
+.card-art .a-chan { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+@media (max-width: 760px) {
+  .rl-controls { grid-template-columns: minmax(0, 1fr); }
+  .rl-plot { height: 180px; }
+  .rl-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rl-kv > div + div { border-left: 0; }
+  .rl-kv > div:nth-child(n + 3) { border-top: 1px dashed var(--line); }
+  .rl-kv > div:nth-child(even) { border-left: 1px dashed var(--line); }
+}

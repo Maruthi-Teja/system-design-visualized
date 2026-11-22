@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Design a Notification System · System Design Visualized</title>
+  <meta name="description" content="Interactive notification system design: push, SMS, email and in-app delivery with priorities, idempotency, retries with backoff and jitter (try the retry lab), data model, API and interview follow-ups.">
+  <meta name="theme-color" content="#0a0e14">
+  <!-- Set the theme before first paint to avoid a flash. -->
+  <script>(function(){var t;try{t=localStorage.getItem('sdv-theme')}catch(e){}if(!t)t=window.matchMedia&&matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';document.documentElement.dataset.theme=t})()</script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0e14'/%3E%3Cpath d='M8 10h6v5H8zM18 17h6v5h-6z' fill='none' stroke='%235eead4' stroke-width='2'/%3E%3Cpath d='M14 12.5h4v7' fill='none' stroke='%23fbbf24' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="../index.html">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--surface-2)"/><path d="M8 10h6v5H8zM18 17h6v5h-6z" fill="none" stroke="var(--accent)" stroke-width="2"/><path d="M14 12.5h4v7" fill="none" stroke="var(--money)" stroke-width="2"/></svg>
+      <span>System Design <small>Visualized</small></span>
+    </a>
+    <nav class="topnav" aria-label="On this page">
+      <a href="#requirements">Requirements</a>
+      <a href="#estimation">Estimation</a>
+      <a href="#retries">Retry lab</a>
+      <a href="#walkthrough-section">Walkthrough</a>
+      <a href="#deep-dive">Deep dive</a>
+      <a href="#interview">Interviewer asks</a>
+    </nav>
+    <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle dark / light mode">
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+  </div>
+</header>
+
+<main>
+  <div class="wrap page-hero">
+    <p class="crumb"><a href="../index.html">All designs</a> / HLD</p>
+    <h1>Design a Notification System</h1>
+    <p class="lede">One API that any service can call to reach a user by push, SMS, email or in-app — respecting their preferences, never sending the same OTP twice, and never letting a 20-million-user marketing blast delay a password reset.</p>
+    <ul class="chips">
+      <li class="chip"><b>1B</b> notifications / day</li>
+      <li class="chip">priority isolation</li>
+      <li class="chip">idempotency keys</li>
+      <li class="chip">backoff + jitter</li>
+      <li class="chip">at-least-once</li>
+    </ul>
+  </div>
+
+  <!-- ============================ 1. Requirements ============================ -->
+  <section class="wrap section" id="requirements">
+    <div class="section-head"><span class="num">01</span><h2>Requirements</h2></div>
+    <p class="section-intro">Two very different workloads share this system: small, urgent <b>transactional</b> messages and huge, patient <b>bulk</b> campaigns. Say so up front — most of the design is about keeping them out of each other’s way.</p>
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">Functional</span></h3>
+        <ul class="checklist">
+          <li><b>Multi-channel</b> <span>— push (iOS / Android), SMS, email, in-app inbox.</span></li>
+          <li><b>Event-driven API</b> <span>— callers send a type + data; we render the text.</span></li>
+          <li><b>Preferences</b> <span>— opt-outs per category and channel, quiet hours, language.</span></li>
+          <li><b>Bulk campaigns</b> <span>— one request to millions of users, scheduled by time zone.</span></li>
+          <li><b>Frequency caps</b> <span>— e.g. at most 3 promotional pushes a day.</span></li>
+          <li><b>Status tracking</b> <span>— sent, delivered, opened, bounced.</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Non-functional</span></h3>
+        <ul class="checklist">
+          <li><b>Fast for critical</b> <span>— OTPs and security alerts out in a few seconds, even during a campaign.</span></li>
+          <li><b>Throughput</b> <span>— ~1B / day, bursts of 100K+/s.</span></li>
+          <li><b>Reliable</b> <span>— at-least-once; never silently drop a transactional message.</span></li>
+          <li><b>No duplicates</b> <span>— caller retries must not send twice.</span></li>
+          <li><b>Respect provider limits</b> <span>— and survive provider outages.</span></li>
+          <li><b>Status can lag</b> <span>— eventual consistency is fine for tracking.</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Out of scope</span></h3>
+        <ul class="checklist is-out">
+          <li>Building a push or SMS network — we use providers</li>
+          <li>Campaign authoring UI and audience building</li>
+          <li>Rich email editor and A/B test analysis</li>
+          <li>Real-time chat (that’s a different system)</li>
+          <li>Billing for SMS costs</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================= 2. Estimation ============================= -->
+  <section class="wrap section" id="estimation">
+    <div class="section-head"><span class="num">02</span><h2>Back-of-envelope estimation</h2></div>
+    <p class="section-intro">Assume <b>200M daily users</b> and about <b>1B notifications a day</b>, mostly push. Throughput is moderate; what hurts is burstiness and the money spent on SMS.</p>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-label">Average rate</div><div class="stat-value">11.6K<small>/ s</small></div><div class="stat-note">1B per day</div></div>
+      <div class="stat"><div class="stat-label">Campaign burst</div><div class="stat-value">~35K<small>/ s</small></div><div class="stat-note">20M users in ~10 min, on top of normal load</div></div>
+      <div class="stat"><div class="stat-label">Delivery log</div><div class="stat-value">90<small>TB</small></div><div class="stat-note">1 TB/day × 90 days retention</div></div>
+      <div class="stat"><div class="stat-label">SMS share</div><div class="stat-value">1<small>%</small></div><div class="stat-note">10M/day — the line item finance asks about</div></div>
+    </div>
+
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">QPS</span> Traffic</h3>
+        <ul class="math">
+          <li><span>Notifications / second</span><span class="res">≈ 11.6K</span><span class="calc">1B ÷ 86,400 s</span></li>
+          <li><span>Channel messages / second</span><span class="res">≈ 20K</span><span class="calc">~1.7 messages per notification (several devices, push + email)</span></li>
+          <li><span>Campaign fan-out</span><span class="res">≈ 33K / s</span><span class="calc">20M users ÷ 600 s, throttled</span></li>
+          <li><span>Preference reads</span><span class="res">≈ 12K / s</span><span class="calc">one per notification, &gt;95% from cache</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Channels</span> Mix &amp; cost</h3>
+        <ul class="math">
+          <li><span>Push</span><span class="res">≈ 75%</span><span class="calc">750M / day — near-free per message</span></li>
+          <li><span>In-app inbox</span><span class="res">≈ 14%</span><span class="calc">140M / day — our own storage</span></li>
+          <li><span>Email</span><span class="res">≈ 10%</span><span class="calc">100M / day — fractions of a cent each</span></li>
+          <li><span>SMS</span><span class="res">≈ 1%</span><span class="calc">10M / day — cents each, so OTP and critical only</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Storage</span> Per day</h3>
+        <ul class="math">
+          <li><span>Delivery log</span><span class="res">≈ 1 TB</span><span class="calc">1.7B messages × ~600 B (ids, status history)</span></li>
+          <li><span>In-app inbox</span><span class="res">≈ 70 GB</span><span class="calc">140M × ~500 B; kept 30–90 days</span></li>
+          <li><span>Device tokens</span><span class="res">≈ 80 GB total</span><span class="calc">400M devices × ~200 B</span></li>
+          <li><span>Idempotency keys</span><span class="res">≈ 100 GB</span><span class="calc">1B × ~100 B, 24 h TTL — in Redis</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== 3. Retry lab ============================== -->
+  <section class="wrap section" id="retries">
+    <div class="section-head"><span class="num">03</span><h2>Retry lab</h2></div>
+    <p class="section-intro">The SMS provider goes down and <b>1,000 OTPs</b> fail at once. Each gets 7 attempts. When the provider comes back it can only take so many requests per second. Pick a retry strategy and watch what the provider sees.</p>
+
+    <div class="sim" id="retrylab">
+      <div class="sim-tabs" role="tablist" aria-label="Retry strategy">
+        <button class="sim-tab" type="button" role="tab" data-strategy="immediate">Immediate</button>
+        <button class="sim-tab" type="button" role="tab" data-strategy="fixed">Fixed 2 s</button>
+        <button class="sim-tab" type="button" role="tab" data-strategy="expo">Exponential</button>
+        <button class="sim-tab" type="button" role="tab" data-strategy="jitter">Exponential + jitter</button>
+      </div>
+      <div class="sim-body">
+        <p class="sim-desc rl-desc"></p>
+        <div class="rl-controls">
+          <label class="lab-field"><span>Outage length <b data-out="outage"></b></span><input type="range" min="5" max="40" step="1" value="15" data-rl="outage"></label>
+          <label class="lab-field"><span>Provider capacity after recovery <b data-out="cap"></b></span><input type="range" min="50" max="300" step="25" value="100" data-rl="cap"></label>
+        </div>
+        <div class="rl-plot">
+          <span class="rl-ymax"></span>
+          <div class="rl-outage-label"></div>
+          <svg class="rl-chart" viewBox="0 0 1000 200" preserveAspectRatio="none" role="img" aria-label="Attempts per second: accepted and rejected"></svg>
+          <span class="rl-cap-label"></span>
+        </div>
+        <div class="sim-strip-labels"><span>0 s</span><span>25 s</span><span>50 s</span><span>75 s</span><span>100 s</span></div>
+        <div class="rl-legend"><span><i class="is-ok"></i>accepted</span><span><i class="is-no"></i>rejected (down or 429)</span><span><i class="is-cap"></i>provider capacity</span></div>
+        <dl class="lab-kv rl-kv">
+          <div><dt>Delivered</dt><dd data-out="delivered"></dd></div>
+          <div><dt>Dead-lettered</dt><dd data-out="dead"></dd></div>
+          <div><dt>Total calls to provider</dt><dd data-out="attempts"></dd></div>
+          <div><dt>Peak load after recovery</dt><dd data-out="peak"></dd></div>
+          <div><dt>Last delivery at</dt><dd data-out="last"></dd></div>
+        </dl>
+        <p class="sim-try"><strong>Try this:</strong> compare <b>Exponential</b> and <b>Exponential + jitter</b> at the defaults. Same average wait — but without jitter all 1,000 retries land in the same second, ten times what the provider can take. Then stretch the outage to 35 s: even jitter runs out of attempts, which is why retry limits should be set by <i>time</i> (the message’s expiry), not just by count.</p>
+      </div>
+    </div>
+    <noscript><p class="block">The retry lab needs JavaScript.</p></noscript>
+  </section>
+
+  <!-- ============================= 4. Walkthrough ============================= -->
+  <section class="wrap section" id="walkthrough-section">
+    <div class="section-head"><span class="num">04</span><h2>Architecture walkthrough</h2></div>
+    <p class="section-intro">An order-shipped push from request to phone, a 20-million-user campaign running alongside it, an SMS provider failure, and delivery tracking. Click any component to jump to it.</p>
+    <div id="walkthrough"></div>
+    <noscript><p class="block">The interactive walkthrough needs JavaScript.</p></noscript>
+  </section>
+
+  <!-- ============================== 5. Deep dive ============================== -->
+  <section class="wrap section" id="deep-dive">
+    <div class="section-head"><span class="num">05</span><h2>Deep dive</h2></div>
+
+    <h3 class="subhead">Data model</h3>
+    <p class="section-intro">Split by how the data is used: small, read-heavy configuration (preferences, templates) cached everywhere; large append-heavy history (delivery log, inbox) partitioned by user or message.</p>
+    <div class="entities">
+      <div class="entity">
+        <header>notification <span>request record</span></header>
+        <ul>
+          <li class="pk"><b>notification_id</b><i>PK · time-ordered id</i></li>
+          <li class="fk"><b>user_id</b><i></i></li>
+          <li><b>type</b><i>e.g. order_shipped</i></li>
+          <li><b>priority</b><i>critical | normal | bulk</i></li>
+          <li><b>data</b><i>json for the template</i></li>
+          <li><b>idempotency_key, caller</b><i></i></li>
+          <li><b>send_at, expires_at</b><i>timestamps</i></li>
+        </ul>
+        <footer>One per API request. Expands into one or more channel messages.</footer>
+      </div>
+      <div class="entity">
+        <header>message <span>delivery log</span></header>
+        <ul>
+          <li class="pk"><b>notification_id</b><i>partition key</i></li>
+          <li class="pk"><b>message_id</b><i>clustering key</i></li>
+          <li><b>channel, address</b><i>token / phone / email</i></li>
+          <li><b>status</b><i>queued → sent → delivered | failed</i></li>
+          <li><b>attempts, last_error</b><i></i></li>
+          <li><b>provider_message_id</b><i>to match receipts</i></li>
+        </ul>
+        <footer>Status only moves forward. ~1.7B rows a day, TTL 90 days.</footer>
+      </div>
+      <div class="entity">
+        <header>user_preferences <span>KV, cached</span></header>
+        <ul>
+          <li class="pk"><b>user_id</b><i>PK</i></li>
+          <li><b>channel_opt_outs</b><i>set</i></li>
+          <li><b>category_opt_outs</b><i>e.g. marketing</i></li>
+          <li><b>quiet_hours, tz</b><i>22:00–08:00, Asia/Kolkata</i></li>
+          <li><b>locale</b><i>en-IN</i></li>
+          <li><b>email, phone</b><i>verified flags</i></li>
+        </ul>
+        <footer>Read on every notification, written rarely. Cache with change events for invalidation.</footer>
+      </div>
+      <div class="entity">
+        <header>device <span>KV</span></header>
+        <ul>
+          <li class="pk"><b>user_id</b><i>partition key</i></li>
+          <li class="pk"><b>device_id</b><i>clustering key</i></li>
+          <li><b>platform</b><i>ios | android | web</i></li>
+          <li><b>push_token</b><i>provider token</i></li>
+          <li><b>app_version, last_seen</b><i></i></li>
+          <li><b>active</b><i>false after “unregistered”</i></li>
+        </ul>
+        <footer>Tokens rotate; prune ones the provider rejects and devices unseen for months.</footer>
+      </div>
+      <div class="entity">
+        <header>template <span>versioned</span></header>
+        <ul>
+          <li class="pk"><b>type, channel, locale</b><i>key</i></li>
+          <li class="pk"><b>version</b><i>int</i></li>
+          <li><b>title, body</b><i>with {{placeholders}}</i></li>
+          <li><b>category</b><i>for opt-outs and caps</i></li>
+          <li><b>default_priority, ttl</b><i></i></li>
+        </ul>
+        <footer>Small enough to keep entirely in memory in every dispatcher.</footer>
+      </div>
+      <div class="entity">
+        <header>inbox_item <span>in-app</span></header>
+        <ul>
+          <li class="pk"><b>user_id</b><i>partition key</i></li>
+          <li class="pk"><b>created_at</b><i>clustering, desc</i></li>
+          <li class="fk"><b>notification_id</b><i></i></li>
+          <li><b>title, body, deep_link</b><i></i></li>
+          <li><b>read_at</b><i>nullable</i></li>
+        </ul>
+        <footer>The durable copy the app syncs on open. Push only says “something new”.</footer>
+      </div>
+    </div>
+
+    <h3 class="subhead">API sketch</h3>
+    <div class="grid-2">
+      <div class="code">
+        <div class="code-head"><span class="verb">POST</span><b>/v1/notifications</b><span>service → us</span></div>
+<pre><code class="json">// Headers: Authorization: Bearer &lt;service token&gt;
+//          Idempotency-Key: order-981:shipped
+{
+  "user_id": "u_42",
+  "type": "order_shipped",
+  "priority": "normal",
+  "data": {
+    "order_id": "981",
+    "carrier": "Example Logistics",
+    "eta": "2026-11-25"
+  },
+  "expires_at": "2026-11-24T00:00:00Z"
+}
+
+// 202 Accepted
+{
+  "notification_id": "ntf_01JD3X8M2Q",
+  "status": "accepted"
+}
+
+// Same Idempotency-Key again → 202 with the SAME notification_id,
+// and nothing is sent a second time.</code></pre>
+        <div class="code-note"><code>202</code>, not <code>200</code>: the request is accepted, not delivered. Status is available from <code>GET /v1/notifications/{id}</code> or a callback webhook.</div>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="verb">POST</span><b>/v1/campaigns</b><span>bulk</span></div>
+<pre><code class="json">{
+  "campaign_id": "cmp_winter_sale",
+  "type": "promo_winter_sale",
+  "priority": "bulk",
+  "audience": { "segment_id": "seg_active_30d_in" },
+  "schedule": {
+    "local_time": "09:00",        // per user's time zone
+    "window_minutes": 120
+  },
+  "max_rate_per_sec": 20000
+}
+
+// Provider receipt arriving at our webhook
+// POST /v1/receipts/email
+{
+  "provider_message_id": "pm_77d1",
+  "event": "bounced",
+  "bounce_type": "hard",
+  "timestamp": "2026-11-22T09:01:12Z"
+}</code></pre>
+        <div class="code-note">A hard bounce marks the email address invalid in preferences. An “unregistered” push token deactivates that device.</div>
+      </div>
+    </div>
+
+    <h3 class="subhead">Channels compared</h3>
+    <div class="table-scroll">
+      <table class="modes is-compare">
+        <thead><tr><th>Channel</th><th>Latency</th><th>Cost</th><th>Delivery guarantee</th><th>Use for</th></tr></thead>
+        <tbody>
+          <tr><td>Push</td><td>~1 s</td><td><span class="good">Near zero</span></td><td>Best effort; offline phones get it later or never</td><td>Most things: order updates, mentions, reminders.</td></tr>
+          <tr><td>In-app inbox</td><td>On next app open</td><td><span class="good">Our storage only</span></td><td><span class="good">Durable</span> — we own it</td><td>The record of everything; pairs with push.</td></tr>
+          <tr><td>Email</td><td>Seconds to minutes</td><td>Low</td><td>Spam filters decide; bounces reported</td><td>Receipts, digests, anything long or that must be kept.</td></tr>
+          <tr><td>SMS</td><td>Seconds</td><td><span class="bad">Cents per message</span></td><td>High reach, no app needed; carrier filtering</td><td>OTPs, security alerts, users without the app.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="subhead">Scaling</h3>
+    <div class="grid-3">
+      <div class="block">
+        <h3><span class="pill">Stateless</span> Every stage scales alone</h3>
+        <p>API, dispatcher and channel workers hold no state of their own; queues sit between each stage. Scale each on its own queue lag: a campaign scales dispatchers, an email backlog scales email workers only.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-money">Providers</span> The real bottleneck</h3>
+        <p>Your fleet can always grow; provider quotas can’t. Rate-limit per provider and per sender account with token buckets, reserve a share for critical traffic, and keep a second SMS and email provider for failover.</p>
+      </div>
+      <div class="block">
+        <h3><span class="pill is-async">Order</span> Per user, not global</h3>
+        <p>Partitioning by <code>user_id</code> keeps one user’s notifications in order (“shipped” before “delivered”) while spreading load. Global ordering is neither possible nor needed. Collapse keys handle updates that overtake each other.</p>
+      </div>
+    </div>
+
+    <h3 class="subhead">Failure modes</h3>
+    <div class="table-scroll">
+      <table class="modes">
+        <thead><tr><th>What breaks</th><th>Effect</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>Provider outage</td><td>A channel stops delivering.</td><td>Circuit breaker, backoff with jitter, failover provider for critical traffic, expire messages that are no longer useful.</td></tr>
+          <tr><td>Provider throttling (429)</td><td>Throughput capped below demand.</td><td>Client-side token bucket per provider below the quota; honour <code>Retry-After</code>; let bulk absorb the delay, not critical.</td></tr>
+          <tr><td>Worker crash mid-send</td><td>Message may or may not have gone out.</td><td>At-least-once: re-delivered from the queue. Check the delivery log for <code>sent</code> first; pass a provider idempotency / collapse key where supported.</td></tr>
+          <tr><td>Campaign floods the pipeline</td><td>OTPs stuck behind marketing.</td><td>Separate topics and consumers per priority; throttle fan-out; pause bulk consumers when critical lag rises.</td></tr>
+          <tr><td>Preference store down</td><td>Can’t check opt-outs.</td><td>Serve from cache; if unavailable, send only critical (security, OTP) and hold everything else — never send marketing to someone who might have opted out.</td></tr>
+          <tr><td>Bug sends a duplicate blast</td><td>Millions of users get the same message twice.</td><td>Idempotency per <code>(campaign, user)</code>, a global per-user frequency cap as a final safety net, and a campaign kill switch.</td></tr>
+          <tr><td>Stale device tokens</td><td>Wasted sends; provider may throttle the sender.</td><td>Deactivate on “unregistered” responses; refresh tokens on app start; prune devices unseen for months.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- =========================== 6. Interviewer asks =========================== -->
+  <section class="wrap-narrow section" id="interview">
+    <div class="section-head"><span class="num">06</span><h2>Interviewer asks…</h2></div>
+    <p class="section-intro">Likely follow-ups. Try answering out loud before you expand each one.</p>
+    <div class="qa">
+
+      <details>
+        <summary><span class="q-num">Q1</span>How do you make sure a user never gets the same OTP twice?</summary>
+        <div class="answer">
+          <p class="tag-line">DUPLICATES</p>
+          <p>Duplicates come from two places, and each needs its own fix:</p>
+          <ul>
+            <li><b>Caller retries</b> (the API call timed out but succeeded): an <code>Idempotency-Key</code> stored with <code>SET NX</code>. A repeat returns the original <code>notification_id</code> and sends nothing.</li>
+            <li><b>Internal retries</b> (a worker crashed after the provider accepted): check the delivery log for <code>sent</code> before calling the provider, and pass <code>message_id</code> to the provider where it supports deduplication or collapse keys.</li>
+          </ul>
+          <p>Be honest about the limit: with an external provider in the loop, the guarantee is at-least-once with a very small duplicate window, not exactly-once. A good OTP design tolerates that — the second copy carries the same code.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q2</span>Marketing just sent to 20M users. How do you stop that from delaying a password reset?</summary>
+        <div class="answer">
+          <p class="tag-line">PRIORITY ISOLATION</p>
+          <p>Isolation at every shared resource, not just a priority field:</p>
+          <ul>
+            <li><b>Separate topics</b> per priority with separate consumer pools and reserved capacity for critical.</li>
+            <li><b>Separate channel queues</b> per priority, so bulk email can’t back up the critical email queue.</li>
+            <li><b>Provider quota split</b>: reserve, say, 30% of each provider’s rate limit for critical.</li>
+            <li><b>Throttled fan-out</b>: the campaign is expanded at a fixed rate instead of all at once.</li>
+            <li><b>Back-pressure</b>: if critical consumer lag rises, pause bulk consumers automatically.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q3</span>The SMS provider is down for 10 minutes. Walk me through what happens.</summary>
+        <div class="answer">
+          <p class="tag-line">PROVIDER OUTAGE</p>
+          <p>Workers see timeouts and 5xx errors. Messages go to the retry queue with exponential backoff and jitter. After a handful of failures in a short window the <b>circuit breaker opens</b>: workers stop calling that provider at all and fail fast.</p>
+          <ul>
+            <li><b>Critical</b> SMS fails over to the secondary provider straight away.</li>
+            <li><b>Normal</b> traffic waits and retries; messages past their <code>expires_at</code> (an OTP after 5 minutes) are dropped to the DLQ rather than delivered uselessly late.</li>
+            <li>The breaker goes <b>half-open</b> periodically, sending a trickle; when those succeed, traffic ramps back gradually — with jitter, so the backlog doesn’t knock the provider over again.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q4</span>Why exponential backoff with jitter? Isn’t backoff enough?</summary>
+        <div class="answer">
+          <p class="tag-line">RETRIES</p>
+          <p>Backoff reduces <i>how often</i> each message retries. It does nothing about <i>when</i>: messages that failed together retry together, because they all compute the same delays. When the provider recovers it’s hit by one synchronised wave, overloads, and the cycle repeats.</p>
+          <p>Jitter randomises each delay (full jitter: a random time between 0 and the backoff), turning the wave into a steady stream. The retry lab above shows it: 1,000 retries in one second without jitter, under a hundred per second with it.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q5</span>How do quiet hours and “send at 9 AM local time” work across time zones?</summary>
+        <div class="answer">
+          <p class="tag-line">SCHEDULING</p>
+          <p>Store each user’s IANA time zone in preferences. For a scheduled campaign, the fan-out service groups the audience by time zone and enqueues each group when its local 9 AM arrives — the load spreads itself across 24 hours.</p>
+          <p>For quiet hours, the dispatcher checks the user’s local time; non-critical messages are put on a <b>scheduled</b> queue (a time-bucketed store or delayed topic) with <code>send_at</code> = end of quiet hours. Critical messages ignore quiet hours. Watch for daylight-saving transitions: compute with a time-zone library, never with fixed UTC offsets.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q6</span>How do you keep users from being spammed by many different teams?</summary>
+        <div class="answer">
+          <p class="tag-line">FREQUENCY CAPS</p>
+          <p>Because every team goes through one system, it can enforce <b>global</b> per-user caps by category: e.g. at most 3 promotional pushes per day, at most 1 per hour. The dispatcher increments a counter per <code>(user, category, window)</code> in Redis and drops or digests anything over the cap.</p>
+          <p>Transactional and critical categories are exempt — you never cap a password reset. Collapse similar notifications (“5 people liked your post”) instead of sending five.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q7</span>How do you know whether a notification was actually delivered or read?</summary>
+        <div class="answer">
+          <p class="tag-line">TRACKING</p>
+          <ul>
+            <li><b>Sent</b>: the provider accepted it — recorded by our worker.</li>
+            <li><b>Delivered</b>: provider receipts / webhooks for SMS and email; push providers give limited delivery data, so the app itself can report receipt.</li>
+            <li><b>Opened / clicked</b>: tracking pixels and redirect links in email; the app reports opens for push and in-app.</li>
+          </ul>
+          <p>All of these arrive late, duplicated and out of order. Store status as a forward-only state machine, deduplicate by <code>(message_id, event)</code>, and aggregate in an analytics store for campaign reports.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q8</span>Does order matter? What if “delivered” arrives before “shipped”?</summary>
+        <div class="answer">
+          <p class="tag-line">ORDERING</p>
+          <p>Per-user order matters; global order doesn’t. Partition every queue by <code>user_id</code> so one user’s notifications are processed in sequence by one consumer at a time.</p>
+          <p>Retries can still reorder things (“shipped” fails and retries after “delivered” succeeds). Two cheap defences: give each notification an <code>expires_at</code> or a sequence number per entity and drop stale ones, and use the same <b>collapse key</b> (e.g. <code>order-981</code>) so a newer status replaces the older one on the device.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q9</span>Where does the in-app inbox fit, if you already have push?</summary>
+        <div class="answer">
+          <p class="tag-line">IN-APP</p>
+          <p>Push is unreliable by design — phones are offline, users disable it, the OS drops it. The inbox is the <b>durable record</b>: written by the dispatcher like any other channel, stored per user, and synced by the app on open (paginated by <code>created_at</code>, with unread counts).</p>
+          <p>Push then becomes a doorbell — “you have something new” — and the app fetches the content. That also keeps sensitive details off the lock screen.</p>
+        </div>
+      </details>
+
+      <details>
+        <summary><span class="q-num">Q10</span>Where are the bottlenecks, and what would you monitor?</summary>
+        <div class="answer">
+          <p class="tag-line">OPERATIONS</p>
+          <p>The internal stages scale horizontally; the constraints are <b>provider quotas</b>, <b>preference lookups</b> during big campaigns, and <b>hot users</b> (a celebrity account generating notifications for millions of followers — that is a fan-out problem, handled like a campaign).</p>
+          <p>Monitor:</p>
+          <ul>
+            <li>Consumer lag per priority topic — the earliest warning that critical is slowing down.</li>
+            <li>End-to-end latency for critical (request accepted → provider accepted), p50 / p99.</li>
+            <li>Provider error and throttle rates, circuit-breaker state, DLQ growth.</li>
+            <li>Opt-out and spam-complaint rates per campaign — the business signal that you’re over-sending.</li>
+          </ul>
+        </div>
+      </details>
+
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <span>System Design Visualized — numbers are illustrative assumptions, not measurements.</span>
+    <a href="../index.html">← All designs</a>
+  </div>
+</footer>
+
+<script src="../assets/engine.js"></script>
+<script src="notification-system.config.js"></script>
+<script src="notification-system.lab.js"></script>
+<script>SDV.mount(document.getElementById('walkthrough'), window.NOTIFICATION_CONFIG);</script>
+</body>
+</html>
